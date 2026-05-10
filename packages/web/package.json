@@ -1,0 +1,37 @@
+{
+  "name": "@getshit/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbopack -p 3000",
+    "build": "pnpm --filter @getshit/core build && next build --turbopack",
+    "start": "next start -p 3000",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'no tests yet'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.41.0",
+    "@getshit/core": "workspace:*",
+    "@libsql/client": "^0.17.3",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "libsql": "^0.4.0",
+    "lucide-react": "^0.460.0",
+    "next": "^15.5.0",
+    "next-auth": "5.0.0-beta.31",
+    "openai": "^4.77.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.184.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.184.1",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.2"
+  }
+}

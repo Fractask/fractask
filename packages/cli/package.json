@@ -1,0 +1,24 @@
+{
+  "name": "@getshit/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "getshit": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'no tests yet'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.41.0",
+    "@getshit/core": "workspace:*",
+    "clipanion": "^4.0.0-rc.4",
+    "openai": "^4.77.0",
+    "typanion": "^3.14.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
