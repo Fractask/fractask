@@ -61,7 +61,7 @@ pnpm install
 **2. Add your first goal — from the CLI**
 
 ```sh
-pnpm --filter @getshit/cli build
+pnpm -r build
 node packages/cli/dist/index.js add "Ship the new homepage"
 node packages/cli/dist/index.js ls --tree
 ```
@@ -264,11 +264,8 @@ For teams who want shared trees without running infrastructure: shared task tree
 
 ```sh
 pnpm install
-pnpm typecheck                    # all packages
+pnpm -r build                     # build all packages in dep order
 pnpm --filter @getshit/core test  # unit + smoke tests
-pnpm --filter @getshit/core build
-pnpm --filter @getshit/cli  build
-pnpm --filter @getshit/mcp  build
 pnpm --filter @getshit/web  dev
 ```
 
