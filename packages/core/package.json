@@ -29,7 +29,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.41.0",
     "@libsql/client": "^0.17.3",
-    "drizzle-orm": "^0.36.4",
+    "drizzle-orm": "^0.45.2",
     "nanoid": "^5.0.9",
     "openai": "^4.77.0",
     "zod": "^3.23.8"
