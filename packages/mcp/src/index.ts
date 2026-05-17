@@ -8,21 +8,69 @@ import {
   TOOLS,
   getCurrentContext,
   getEffectiveTaskGuidelines,
+  getServerInstructions,
   runMigrations,
 } from '@getshit/core';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { ZodRawShape } from 'zod';
 
-const server = new McpServer({
-  name: 'getshit',
-  version: '0.0.0',
-});
+// libSQL embedded replicas are not safe for concurrent multi-process access —
+// multiple MCP instances racing on a shared replica.db corrupt the WAL and
+// sync metadata. Give each MCP process its own replica file in tmp.
+// Caller can still override via GETSHIT_REPLICA_PATH.
+//
+// Cleanup runs at startup: scan tmp for getshit-mcp-<pid>.db files whose pid
+// is no longer alive and unlink them. This is more reliable than exit/signal
+// handlers, which the MCP SDK can intercept, and also covers SIGKILL and
+// crashes.
+if (!process.env['GETSHIT_REPLICA_PATH']) {
+  const tmpdir = os.tmpdir();
+  try {
+    for (const entry of fs.readdirSync(tmpdir)) {
+      const match = entry.match(/^getshit-mcp-(\d+)\.db(-wal|-shm|-info)?$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (pid === process.pid) continue;
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (err) {
+        // ESRCH = no such process; EPERM = exists but not ours (still alive)
+        alive = (err as NodeJS.ErrnoException).code === 'EPERM';
+      }
+      if (!alive) {
+        try { fs.unlinkSync(path.join(tmpdir, entry)); } catch { /* best-effort */ }
+      }
+    }
+  } catch { /* tmpdir unreadable — skip sweep */ }
+  process.env['GETSHIT_REPLICA_PATH'] = path.join(tmpdir, `getshit-mcp-${process.pid}.db`);
+}
 
 await runMigrations();
 const ctx = await getCurrentContext();
 // Pulled at startup; restart the MCP server after editing /settings/guidelines
-// for new text to land in client tool descriptions.
-const guidelines = await getEffectiveTaskGuidelines(ctx);
+// for new text to land in client tool descriptions and server instructions.
+const [guidelines, instructions] = await Promise.all([
+  getEffectiveTaskGuidelines(ctx),
+  getServerInstructions(ctx),
+]);
 const guidelinesBlock = `\n\n--- Additional instructions (configured at /settings/guidelines) ---\n${guidelines}`;
+
+const server = new McpServer(
+  {
+    name: 'getshit',
+    version: '0.0.0',
+  },
+  {
+    // MCP clients surface `instructions` as system-level guidance to the
+    // agent before any tool call. This is where we tell agents that
+    // questions go through ask_human and artifacts through attach_file_from_url.
+    instructions,
+  },
+);
 
 function ok(payload: unknown) {
   return {
