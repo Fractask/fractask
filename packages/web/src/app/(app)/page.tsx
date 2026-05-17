@@ -87,7 +87,7 @@ export default async function HomePage({
   // Fetch roots + every project (regardless of parent) so we can render:
   //   entity sections → their projects, then "Projects" for project-roots.
   // Archived and snoozed are hidden by default; ?hidden=1 surfaces them inline.
-  const hidden: ('archived' | 'snoozed')[] = ['archived', 'snoozed'];
+  const hidden: ('archived' | 'snoozed' | 'backlog')[] = ['archived', 'snoozed', 'backlog'];
   const excludeStatuses = showHidden ? [] : hidden;
   const [rootsWithCounts, projectsAnyParent] = await Promise.all([
     listTasksWithChildCount(ctx, { parentId: null, excludeStatuses }),

@@ -14,6 +14,11 @@ type Props = {
   tagsByTask?: Record<string, Tag[]>;
   reorder?: ReorderMode;
   promote?: PromoteContext;
+  /**
+   * When set, list rows render a small "Nd ago" indicator next to the ID.
+   * Only takes effect in list view — trees have their own structural order.
+   */
+  showDate?: 'createdAt' | 'updatedAt';
 };
 
 export function TasksSection({
@@ -24,6 +29,7 @@ export function TasksSection({
   tagsByTask,
   reorder,
   promote,
+  showDate,
 }: Props) {
   const [target, setTarget] = useState<Task | null>(null);
 
@@ -39,6 +45,7 @@ export function TasksSection({
           reorder={reorder}
           onDecompose={setTarget}
           promote={promote}
+          showDate={showDate}
         />
       )}
       {target && <DecomposeModal task={target} onClose={() => setTarget(null)} />}

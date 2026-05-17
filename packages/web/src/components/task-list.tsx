@@ -30,6 +30,7 @@ export function TaskList({
   reorder,
   onDecompose,
   promote,
+  showDate,
 }: {
   tasks: Task[];
   childCounts?: Record<string, number> | undefined;
@@ -37,6 +38,7 @@ export function TaskList({
   reorder?: ReorderMode | undefined;
   onDecompose?: ((task: Task) => void) | undefined;
   promote?: PromoteContext | undefined;
+  showDate?: 'createdAt' | 'updatedAt' | undefined;
 }) {
   const router = useRouter();
   const [order, setOrder] = useState<Task[]>(tasks);
@@ -239,6 +241,7 @@ export function TaskList({
               childCount={childCounts?.[t.id] ?? 0}
               tags={tagsByTask?.[t.id] ?? []}
               onDecompose={onDecompose}
+              showDate={showDate}
               dragHandle={
                 reorderable
                   ? {

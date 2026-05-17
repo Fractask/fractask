@@ -161,12 +161,31 @@ export default async function SetupPage() {
             <code className="font-mono-id">npx -y mcp-remote@latest {mcpUrl} --header &ldquo;Authorization: Bearer &lt;token&gt;&rdquo;</code>.
           </p>
           <p className="text-xs text-(--color-muted)">
-            Six tools are exposed: <code className="font-mono-id">list_tasks</code>,{' '}
+            <strong>Task tools:</strong>{' '}
+            <code className="font-mono-id">list_tasks</code>,{' '}
             <code className="font-mono-id">get_task</code>,{' '}
             <code className="font-mono-id">create_task</code>,{' '}
             <code className="font-mono-id">update_task</code>,{' '}
             <code className="font-mono-id">delete_task</code>,{' '}
             <code className="font-mono-id">move_task</code>.
+          </p>
+          <p className="text-xs text-(--color-muted) mt-1">
+            <strong>Files:</strong>{' '}
+            <code className="font-mono-id">attach_file_from_url</code>,{' '}
+            <code className="font-mono-id">list_attachments</code>,{' '}
+            <code className="font-mono-id">delete_attachment</code>. Agents drop images, PDFs, or
+            other artifacts on a task by URL; the server stores them and serves at{' '}
+            <code className="font-mono-id">/api/files/&lt;id&gt;</code>.
+          </p>
+          <p className="text-xs text-(--color-muted) mt-1">
+            <strong>Human-in-the-loop:</strong>{' '}
+            <code className="font-mono-id">ask_human</code>,{' '}
+            <code className="font-mono-id">list_prompts</code>,{' '}
+            <code className="font-mono-id">cancel_prompt</code>. The agent posts a structured
+            question (open / choice / approval / pick_image), the task auto-moves to{' '}
+            <code className="font-mono-id">status=&ldquo;review&rdquo;</code>, and the answer
+            surfaces on the next <code className="font-mono-id">get_task</code> as{' '}
+            <code className="font-mono-id">prompts[].answer</code>.
           </p>
         </ClientSection>
       </Step>

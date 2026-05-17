@@ -28,7 +28,9 @@ export const tasks = sqliteTable(
     userId: text('user_id').notNull(),
     title: text('title').notNull(),
     description: text('description'),
-    status: text('status', { enum: ['open', 'doing', 'review', 'done', 'archived', 'snoozed'] })
+    status: text('status', {
+      enum: ['open', 'doing', 'review', 'done', 'backlog', 'snoozed', 'archived'],
+    })
       .notNull()
       .default('open'),
     kind: text('kind', { enum: ['entity', 'project', 'task', 'goal', 'kpi'] })
@@ -151,6 +153,68 @@ export const cliTokens = sqliteTable(
   }),
 );
 
+/**
+ * Binary/file artifacts attached to a task. Storage is pluggable: rows hold
+ * adapter id (`local` | `s3`) + opaque `storageKey`, so we can move adapters
+ * without rewriting metadata. Phase 2 reserves `extracted_text` /
+ * `extracted_at` columns for LLM-ready text extraction.
+ */
+export const taskAttachments = sqliteTable(
+  'task_attachments',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull(),
+    taskId: text('task_id').notNull(),
+    filename: text('filename').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    storage: text('storage', { enum: ['local', 's3'] }).notNull(),
+    storageKey: text('storage_key').notNull(),
+    sha256: text('sha256'),
+    source: text('source', { enum: ['human', 'agent'] })
+      .notNull()
+      .default('human'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({
+    userTask: index('idx_task_attachments_user_task').on(t.userId, t.taskId),
+  }),
+);
+
+/**
+ * Structured human-in-the-loop prompt posted by an agent (or human) against
+ * a task. Lives in its own table because the lifecycle (pending → answered)
+ * differs from a task's, and so a task can have multiple concurrent prompts.
+ *
+ * `options` and `answer` are JSON text — schemas live in `prompts.ts`.
+ * `kind` decides which shape both fields must obey.
+ */
+export const agentPrompts = sqliteTable(
+  'agent_prompts',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id').notNull(),
+    userId: text('user_id').notNull(),
+    askedByUserId: text('asked_by_user_id').notNull(),
+    kind: text('kind', { enum: ['text', 'choice', 'approval', 'pick_image'] }).notNull(),
+    prompt: text('prompt').notNull(),
+    options: text('options'),
+    multiple: integer('multiple').notNull().default(0),
+    status: text('status', { enum: ['pending', 'answered', 'cancelled'] })
+      .notNull()
+      .default('pending'),
+    answer: text('answer'),
+    answeredByUserId: text('answered_by_user_id'),
+    createdAt: integer('created_at').notNull(),
+    answeredAt: integer('answered_at'),
+    cancelledAt: integer('cancelled_at'),
+  },
+  (t) => ({
+    userStatus: index('idx_agent_prompts_user_status').on(t.userId, t.status),
+    taskStatus: index('idx_agent_prompts_task_status').on(t.taskId, t.status),
+  }),
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
@@ -169,3 +233,10 @@ export type CliToken = typeof cliTokens.$inferSelect;
 export type NewCliToken = typeof cliTokens.$inferInsert;
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
+export type TaskAttachment = typeof taskAttachments.$inferSelect;
+export type NewTaskAttachment = typeof taskAttachments.$inferInsert;
+export type AgentPromptRow = typeof agentPrompts.$inferSelect;
+export type NewAgentPromptRow = typeof agentPrompts.$inferInsert;
+export type AgentPromptKind = AgentPromptRow['kind'];
+export type AgentPromptStatus = AgentPromptRow['status'];
+export type AttachmentStorage = TaskAttachment['storage'];

@@ -9,3 +9,6 @@ dist
 coverage
 .vercel
 .claude/
+
+# Local file-attachment storage (production uses S3 via GETSHIT_STORAGE=s3)
+packages/web/data/

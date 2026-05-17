@@ -10,6 +10,8 @@ export function statusBadge(status: Task['status']): string {
       return '[?]';
     case 'done':
       return '[x]';
+    case 'backlog':
+      return '[b]';
     case 'archived':
       return '[a]';
     case 'snoozed':

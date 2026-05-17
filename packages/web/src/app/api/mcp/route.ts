@@ -5,6 +5,7 @@ import {
   TOOLS,
   findTool,
   getEffectiveTaskGuidelines,
+  getServerInstructions,
   resolveTokenToUser,
 } from '@getshit/core';
 import type { Context } from '@getshit/core';
@@ -107,7 +108,11 @@ async function handleRpc(req: JsonRpcRequest, ctx: Context): Promise<JsonRpcResp
   }
 
   switch (req.method) {
-    case 'initialize':
+    case 'initialize': {
+      // The `instructions` field is the canonical place to tell agents what
+      // this server is for — surfaced as system-level guidance before any
+      // tool call. Read from the same settings the rest of the server uses.
+      const instructions = await getServerInstructions(ctx);
       return {
         jsonrpc: '2.0',
         id,
@@ -115,8 +120,10 @@ async function handleRpc(req: JsonRpcRequest, ctx: Context): Promise<JsonRpcResp
           protocolVersion: PROTOCOL_VERSION,
           serverInfo: SERVER_INFO,
           capabilities: { tools: {} },
+          instructions,
         },
       };
+    }
 
     case 'tools/list':
       return { jsonrpc: '2.0', id, result: { tools: await buildToolList(ctx) } };

@@ -1,4 +1,9 @@
-import { ensureSelfAssignee, listTags, listTasks, listTasksWithChildCount } from '@getshit/core';
+import {
+  ensureSelfAssignee,
+  listTags,
+  listTasks,
+  listTasksWithChildCount,
+} from '@getshit/core';
 import type { TaskWithChildCount } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 import { signOutAction } from '@/app/auth/signin/actions';
@@ -22,7 +27,7 @@ export async function Sidebar() {
   const ctx = await getRequestContext();
 
   const me = await ensureSelfAssignee(ctx);
-  const hidden: ('archived' | 'snoozed')[] = ['archived', 'snoozed'];
+  const hidden: ('archived' | 'snoozed' | 'backlog')[] = ['archived', 'snoozed', 'backlog'];
   const [
     inbox,
     dueToday,
@@ -77,7 +82,14 @@ export async function Sidebar() {
         <div className="flex flex-col gap-0.5">
           <SidebarStaticItem item={{ href: '/inbox', label: 'Inbox', icon: 'inbox', count: inbox.length }} />
           <SidebarStaticItem item={{ href: '/today', label: 'Today', icon: 'today', count: dueToday.length }} />
-          <SidebarStaticItem item={{ href: '/reviews', label: 'Reviews', icon: 'reviews', count: reviewsForMe.length }} />
+          <SidebarStaticItem
+            item={{
+              href: '/reviews',
+              label: 'Needs your input',
+              icon: 'reviews',
+              count: reviewsForMe.length,
+            }}
+          />
           <SidebarStaticItem item={{ href: '/', label: 'All', icon: 'all', count: allOpen.length }} />
           <SidebarStaticItem
             item={{ href: '/goals', label: 'Goals & KPIs', icon: 'goals', count: goalsKpisCount }}
@@ -163,6 +175,11 @@ export async function Sidebar() {
             Sign out
           </button>
         </form>
+        {process.env.NEXT_PUBLIC_APP_VERSION && (
+          <div className="px-4 pb-2 text-[10px] text-(--color-muted)/70 tabular-nums">
+            v{process.env.NEXT_PUBLIC_APP_VERSION}
+          </div>
+        )}
       </div>
     </aside>
   );

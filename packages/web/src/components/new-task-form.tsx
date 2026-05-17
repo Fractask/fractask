@@ -13,14 +13,22 @@ const PLACEHOLDER: Record<TaskKind, string> = {
   kpi: 'Add a KPI…',
 };
 
+function endOfToday(): number {
+  const d = new Date();
+  d.setHours(23, 59, 0, 0);
+  return d.getTime();
+}
+
 export function NewTaskForm({
   parentId,
   defaultKind,
   showKindPicker,
+  defaultDueToday,
 }: {
   parentId?: string | null;
   defaultKind?: TaskKind;
   showKindPicker?: boolean;
+  defaultDueToday?: boolean;
 }) {
   const initial: TaskKind = defaultKind ?? 'task';
   const [title, setTitle] = useState('');
@@ -37,6 +45,7 @@ export function NewTaskForm({
         title: trimmed,
         ...(parentId ? { parentId } : {}),
         ...(kind !== 'task' ? { kind } : {}),
+        ...(defaultDueToday ? { dueAt: endOfToday() } : {}),
       });
       if (result.ok) {
         setTitle('');

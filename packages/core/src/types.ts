@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
-export const taskStatusSchema = z.enum(['open', 'doing', 'review', 'done', 'archived', 'snoozed']);
+export const taskStatusSchema = z.enum([
+  'open',
+  'doing',
+  'review',
+  'done',
+  'backlog',
+  'snoozed',
+  'archived',
+]);
 export const userKindSchema = z.enum(['human', 'agent', 'guest']);
 export const taskSourceSchema = z.enum(['human', 'agent']);
 export const taskKindSchema = z.enum(['entity', 'project', 'task', 'goal', 'kpi']);

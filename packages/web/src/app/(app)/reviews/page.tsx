@@ -16,9 +16,9 @@ export default async function ReviewsPage() {
     <div className="px-6 py-4 max-w-4xl mx-auto">
       <header className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-sm font-medium">Reviews</h1>
+          <h1 className="text-sm font-medium">Needs your input</h1>
           <p className="text-xs text-(--color-muted) mt-0.5">
-            Tasks waiting for your approval · {tasks.length}
+            Tasks waiting on you — approvals, agent questions, decisions · {tasks.length}
           </p>
         </div>
       </header>
@@ -26,7 +26,7 @@ export default async function ReviewsPage() {
       <section className="flex flex-col gap-3">
         {tasks.length === 0 ? (
           <p className="text-sm text-(--color-muted) px-2 py-6 text-center">
-            Nothing waiting for your review.
+            Nothing needs your attention right now.
           </p>
         ) : (
           <TaskList tasks={tasks} childCounts={{}} tagsByTask={tagsByTask} />

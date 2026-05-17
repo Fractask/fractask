@@ -17,6 +17,7 @@ import {
 import type { Tag, Task } from '@getshit/core';
 import { deleteTaskAction, setStatusAction, updateTaskAction } from '@/app/actions';
 import { StatusToggle } from './status-toggle';
+import { formatRelativeDate } from '@/lib/sort';
 
 export type DragHandleProps = {
   onDragStart: (e: React.DragEvent) => void;
@@ -36,6 +37,7 @@ export function TaskRow({
   density = 'comfy',
   dragHandle,
   promote,
+  showDate,
 }: {
   task: Task;
   childCount?: number | undefined;
@@ -44,6 +46,7 @@ export function TaskRow({
   density?: 'comfy' | 'compact' | undefined;
   dragHandle?: DragHandleProps | undefined;
   promote?: PromoteProps | undefined;
+  showDate?: 'createdAt' | 'updatedAt' | undefined;
 }) {
   const [editing, setEditing] = useState(false);
 
@@ -67,7 +70,7 @@ export function TaskRow({
           <GripVertical size={14} />
         </span>
       )}
-      <StatusToggle id={task.id} status={task.status} />
+      <StatusToggle id={task.id} status={task.status} showLabel />
       {task.kind === 'goal' && (
         <Target size={12} className="text-(--color-muted) shrink-0" aria-label="Goal" />
       )}
@@ -122,6 +125,18 @@ export function TaskRow({
       )}
       {childCount > 0 && !editing && (
         <span className="font-mono-id text-(--color-muted)">{childCount}</span>
+      )}
+      {!editing && showDate && (
+        <span
+          className="font-mono-id text-[10px] text-(--color-muted)/80 hidden sm:inline"
+          title={
+            showDate === 'createdAt'
+              ? `Created ${new Date(task.createdAt).toLocaleString()}`
+              : `Updated ${new Date(task.updatedAt).toLocaleString()}`
+          }
+        >
+          {formatRelativeDate(task[showDate])}
+        </span>
       )}
       {!editing && (
         <span className="font-mono-id text-(--color-muted) hidden md:inline">

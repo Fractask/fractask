@@ -10,6 +10,7 @@ import {
   CalendarDays,
   ChevronRight,
   Eye,
+  HelpCircle,
   Inbox,
   Key,
   ListTodo,
@@ -104,6 +105,7 @@ type StaticItem = {
     | 'snoozed'
     | 'tokens'
     | 'reviews'
+    | 'awaiting'
     | 'users'
     | 'setup'
     | 'import'
@@ -123,6 +125,7 @@ const ICONS = {
   snoozed: Moon,
   tokens: Key,
   reviews: Eye,
+  awaiting: HelpCircle,
   users: UserCircle2,
   setup: Plug,
   import: ArrowDownToLine,

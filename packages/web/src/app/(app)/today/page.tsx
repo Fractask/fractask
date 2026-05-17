@@ -41,7 +41,7 @@ export default async function TodayPage() {
             reorder={{ kind: 'priority' }}
           />
         )}
-        <NewTaskForm />
+        <NewTaskForm defaultDueToday />
       </section>
 
       <KeyboardShortcuts focusedId={null} />

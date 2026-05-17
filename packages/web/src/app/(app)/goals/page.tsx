@@ -14,7 +14,7 @@ export const dynamic = 'force-dynamic';
 export default async function GoalsPage() {
   const ctx = await getRequestContext();
 
-  const hidden: ('archived' | 'snoozed')[] = ['archived', 'snoozed'];
+  const hidden: ('archived' | 'snoozed' | 'backlog')[] = ['archived', 'snoozed', 'backlog'];
   const [goals, kpis] = await Promise.all([
     listTasks(ctx, { kind: 'goal', excludeStatuses: hidden }),
     listTasks(ctx, { kind: 'kpi', excludeStatuses: hidden }),

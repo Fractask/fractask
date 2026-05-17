@@ -5,7 +5,10 @@ export * from './tasks.js';
 export * from './assignees.js';
 export * from './tags.js';
 export * from './settings.js';
+export * from './attachments.js';
+export * from './prompts.js';
 export * from './mcp-tools.js';
+export { getStorage, maxUploadBytes, type StorageAdapter } from './storage/index.js';
 export {
   getAccessibleTaskIds,
   assertAccessibleExists,

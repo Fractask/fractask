@@ -4,7 +4,11 @@ import {
   AmbiguousIdError,
   CycleError,
   NotFoundError,
+  addAttachmentFromUrl as coreAddAttachmentFromUrl,
+  answerPrompt as coreAnswerPrompt,
+  cancelPrompt as coreCancelPrompt,
   createTask as coreCreateTask,
+  deleteAttachment as coreDeleteAttachment,
   deleteTask as coreDeleteTask,
   getTask as coreGetTask,
   moveTask as coreMoveTask,
@@ -12,7 +16,10 @@ import {
   searchTasks as coreSearchTasks,
   setPriority as coreSetPriority,
   updateTask as coreUpdateTask,
+  type AgentPrompt,
+  type PromptAnswer,
   type Task,
+  type TaskAttachment,
   type TaskKind,
   type TaskStatus,
 } from '@getshit/core';
@@ -44,6 +51,7 @@ export async function createTaskAction(input: {
   description?: string;
   parentId?: string | null;
   kind?: TaskKind;
+  dueAt?: number | null;
 }): Promise<ActionResult<Task>> {
   try {
     const ctx = await getRequestContext();
@@ -52,9 +60,11 @@ export async function createTaskAction(input: {
       ...(input.description ? { description: input.description } : {}),
       ...(input.parentId ? { parentId: input.parentId } : {}),
       ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
     });
     paths(task.parentId);
     if (task.parentId) revalidatePath(`/${task.parentId}`);
+    if (task.dueAt !== null) revalidatePath('/today');
     return { ok: true, value: task };
   } catch (err) {
     return { ok: false, error: toError(err) };
@@ -97,6 +107,62 @@ export async function updateTaskAction(
   } catch (err) {
     return { ok: false, error: toError(err) };
   }
+}
+
+export async function deleteAttachmentAction(id: string): Promise<ActionResult<void>> {
+  try {
+    const ctx = await getRequestContext();
+    await coreDeleteAttachment(ctx, id);
+    return { ok: true, value: undefined };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function addAttachmentByUrlAction(
+  taskId: string,
+  url: string,
+): Promise<ActionResult<TaskAttachment>> {
+  try {
+    const ctx = await getRequestContext();
+    const att = await coreAddAttachmentFromUrl(ctx, taskId, url, 'human');
+    revalidatePath(`/${taskId}`);
+    return { ok: true, value: att };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function answerPromptAction(
+  promptId: string,
+  answer: PromptAnswer,
+): Promise<ActionResult<AgentPrompt>> {
+  try {
+    const ctx = await getRequestContext();
+    const updated = await coreAnswerPrompt(ctx, promptId, answer);
+    revalidatePath(`/${updated.taskId}`);
+    revalidatePath('/awaiting');
+    return { ok: true, value: updated };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function cancelPromptAction(promptId: string): Promise<ActionResult<AgentPrompt>> {
+  try {
+    const ctx = await getRequestContext();
+    const updated = await coreCancelPrompt(ctx, promptId);
+    revalidatePath(`/${updated.taskId}`);
+    revalidatePath('/awaiting');
+    return { ok: true, value: updated };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function revalidateTaskAction(taskId: string): Promise<ActionResult<void>> {
+  revalidatePath(`/${taskId}`);
+  return { ok: true, value: undefined };
 }
 
 export async function deleteTaskAction(id: string): Promise<ActionResult<{ deletedIds: string[] }>> {

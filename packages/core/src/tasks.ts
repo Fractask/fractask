@@ -14,7 +14,17 @@ import {
 import { nanoid } from 'nanoid';
 import type { Context } from './context.js';
 import { getDb } from './db/client.js';
-import { tags, tasks, taskTags, type Task, type TaskKind, type TaskStatus } from './schema.js';
+import {
+  tags,
+  tasks,
+  taskTags,
+  type Task,
+  type TaskAttachment,
+  type TaskKind,
+  type TaskStatus,
+} from './schema.js';
+import { listAttachments } from './attachments.js';
+import { listPromptsForTask, type AgentPrompt } from './prompts.js';
 import {
   createTaskInputSchema,
   listTasksFilterSchema,
@@ -31,7 +41,11 @@ import {
 
 export { NotFoundError, ForbiddenError } from './access.js';
 
-export type TaskWithChildren = Task & { children: Task[] };
+export type TaskWithChildren = Task & {
+  children: Task[];
+  attachments: TaskAttachment[];
+  prompts: AgentPrompt[];
+};
 export type TaskTree = Task & { children: TaskTree[] };
 export type TaskWithChildCount = Task & { childCount: number };
 
@@ -245,9 +259,11 @@ export type SearchTasksOptions = {
 
 /**
  * Substring search over title, description, and tag names — scoped to tasks
- * accessible to ctx. Title-prefix wins over title-substring wins over the rest;
- * ties break by recency. LIKE metacharacters in the user query are escaped via
- * `ESCAPE '!'` so a literal `%` or `_` doesn't widen the match.
+ * accessible to ctx. Exact ID match wins, then ID prefix, then title-prefix,
+ * then title-substring, then the rest; ties break by recency. LIKE
+ * metacharacters in the user query are escaped via `ESCAPE '!'` so a literal
+ * `%` or `_` doesn't widen the match. ID matching uses SUBSTR rather than
+ * LIKE so nanoid's `_` and `-` aren't treated as wildcards.
  */
 export async function searchTasks(
   ctx: Context,
@@ -264,19 +280,27 @@ export async function searchTasks(
   const prefixPattern = `${escaped}%`;
   const limit = options.limit ?? 50;
 
-  const conditions = [
-    inArray(tasks.id, accessibleIds),
-    or(
-      sql`LOWER(${tasks.title}) LIKE LOWER(${pattern}) ESCAPE '!'`,
-      sql`LOWER(COALESCE(${tasks.description}, '')) LIKE LOWER(${pattern}) ESCAPE '!'`,
-      sql`${tasks.id} IN (
-        SELECT ${taskTags.taskId} FROM ${taskTags}
-        INNER JOIN ${tags} ON ${tags.id} = ${taskTags.tagId}
-        WHERE ${taskTags.userId} = ${ctx.userId}
-          AND LOWER(${tags.name}) LIKE LOWER(${pattern}) ESCAPE '!'
-      )`,
-    ),
-  ];
+  // Treat the query as a possible nanoid (full or prefix) only when it's
+  // plausibly one — short enough, long enough to not match nearly everything,
+  // and made only of the nanoid alphabet.
+  const idLike = q.length >= 3 && q.length <= 64 && /^[A-Za-z0-9_-]+$/.test(q);
+  const idLen = q.length;
+
+  const textOr = or(
+    sql`LOWER(${tasks.title}) LIKE LOWER(${pattern}) ESCAPE '!'`,
+    sql`LOWER(COALESCE(${tasks.description}, '')) LIKE LOWER(${pattern}) ESCAPE '!'`,
+    sql`${tasks.id} IN (
+      SELECT ${taskTags.taskId} FROM ${taskTags}
+      INNER JOIN ${tags} ON ${tags.id} = ${taskTags.tagId}
+      WHERE ${taskTags.userId} = ${ctx.userId}
+        AND LOWER(${tags.name}) LIKE LOWER(${pattern}) ESCAPE '!'
+    )`,
+  );
+  const matchCondition = idLike
+    ? or(sql`substr(${tasks.id}, 1, ${idLen}) = ${q}`, textOr)
+    : textOr;
+
+  const conditions = [inArray(tasks.id, accessibleIds), matchCondition];
   if (options.kinds && options.kinds.length > 0) {
     conditions.push(inArray(tasks.kind, options.kinds));
   }
@@ -284,19 +308,26 @@ export async function searchTasks(
     conditions.push(notInArray(tasks.status, options.excludeStatuses));
   }
 
+  const rankExpr = idLike
+    ? sql`CASE
+        WHEN ${tasks.id} = ${q} THEN 0
+        WHEN substr(${tasks.id}, 1, ${idLen}) = ${q} THEN 1
+        WHEN LOWER(${tasks.title}) LIKE LOWER(${prefixPattern}) ESCAPE '!' THEN 2
+        WHEN LOWER(${tasks.title}) LIKE LOWER(${pattern}) ESCAPE '!' THEN 3
+        ELSE 4
+      END`
+    : sql`CASE
+        WHEN LOWER(${tasks.title}) LIKE LOWER(${prefixPattern}) ESCAPE '!' THEN 2
+        WHEN LOWER(${tasks.title}) LIKE LOWER(${pattern}) ESCAPE '!' THEN 3
+        ELSE 4
+      END`;
+
   const db = getDb();
   return db
     .select()
     .from(tasks)
     .where(and(...conditions))
-    .orderBy(
-      sql`CASE
-        WHEN LOWER(${tasks.title}) LIKE LOWER(${prefixPattern}) ESCAPE '!' THEN 0
-        WHEN LOWER(${tasks.title}) LIKE LOWER(${pattern}) ESCAPE '!' THEN 1
-        ELSE 2
-      END`,
-      desc(tasks.updatedAt),
-    )
+    .orderBy(rankExpr, desc(tasks.updatedAt))
     .limit(limit);
 }
 
@@ -310,12 +341,16 @@ export async function getTask(ctx: Context, id: string): Promise<TaskWithChildre
     .where(and(eq(tasks.id, id), inArray(tasks.id, accessibleIds)));
   const row = rows[0];
   if (!row) return null;
-  const children = await db
-    .select()
-    .from(tasks)
-    .where(and(inArray(tasks.id, accessibleIds), eq(tasks.parentId, id)))
-    .orderBy(asc(tasks.position), asc(tasks.createdAt));
-  return { ...row, children };
+  const [children, attachments, prompts] = await Promise.all([
+    db
+      .select()
+      .from(tasks)
+      .where(and(inArray(tasks.id, accessibleIds), eq(tasks.parentId, id)))
+      .orderBy(asc(tasks.position), asc(tasks.createdAt)),
+    listAttachments(ctx, id),
+    listPromptsForTask(ctx, id),
+  ]);
+  return { ...row, children, attachments, prompts };
 }
 
 /**

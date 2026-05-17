@@ -85,6 +85,13 @@
       "when": 1778220783182,
       "tag": "0011_third_alex_power",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779000000000,
+      "tag": "0012_attachments_prompts",
+      "breakpoints": true
     }
   ]
 }

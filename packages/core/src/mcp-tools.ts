@@ -1,6 +1,18 @@
 import { z } from 'zod';
 import type { Context } from './context.js';
 import { createTask, deleteTask, getTask, listTasks, moveTask, updateTask } from './tasks.js';
+import {
+  addAttachmentFromUrl,
+  deleteAttachment,
+  listAttachments,
+} from './attachments.js';
+import {
+  cancelPrompt,
+  createPrompt,
+  listPromptsForTask,
+  promptKindSchema,
+  promptOptionSchema,
+} from './prompts.js';
 
 /**
  * One tool, defined once and consumed by both transports:
@@ -30,7 +42,15 @@ export type ToolDef = {
   handler: (ctx: Context, args: unknown) => Promise<unknown>;
 };
 
-const taskStatusEnum = ['open', 'doing', 'review', 'done', 'archived', 'snoozed'] as const;
+const taskStatusEnum = [
+  'open',
+  'doing',
+  'review',
+  'done',
+  'backlog',
+  'snoozed',
+  'archived',
+] as const;
 const taskKindEnum = ['entity', 'project', 'task', 'goal', 'kpi'] as const;
 
 const listTasksZod = z.object({
@@ -73,6 +93,25 @@ const moveTaskZod = z.object({
   position: z.number().int().nonnegative().optional(),
 });
 
+const attachFromUrlZod = z.object({
+  taskId: z.string(),
+  url: z.string().url(),
+});
+
+const listAttachmentsZod = z.object({ taskId: z.string() });
+const deleteAttachmentZod = z.object({ id: z.string() });
+
+const askHumanZod = z.object({
+  taskId: z.string(),
+  kind: promptKindSchema,
+  prompt: z.string().min(1).max(2000),
+  options: z.array(promptOptionSchema).max(50).optional(),
+  multiple: z.boolean().optional(),
+});
+
+const cancelPromptZod = z.object({ id: z.string() });
+const listPromptsZod = z.object({ taskId: z.string() });
+
 const STATUS_PROP = { type: 'string' as const, enum: [...taskStatusEnum] };
 const KIND_PROP = { type: 'string' as const, enum: [...taskKindEnum] };
 const STR_OR_NULL = { type: ['string', 'null'] as const };
@@ -83,7 +122,7 @@ export const TOOLS: ToolDef[] = [
     description: [
       'List tasks for the current user.',
       'Use parentId="root" or null/omit to list top-level tasks. Pass an id to list direct children of that task.',
-      'Status: "open" | "doing" | "review" (waiting for approval) | "done" | "archived" | "snoozed".',
+      'Status: "open" (queued / next-up) | "doing" (active) | "review" (needs the human) | "done" (shipped) | "backlog" (noted, not now, no schedule — pulled when ready) | "snoozed" (hidden until a wake date) | "archived" (dead, kept for reference). The default views (Inbox, Today, project subtasks) exclude backlog/snoozed/archived; pass status explicitly to see them.',
       'Optional kind filter: "entity" (top-level company/area), "project" (a project under an entity), "task" (a to-do).',
       'Optional assigneeId / reviewerId filters: assignee is the doer; reviewer is who must approve when status="review".',
       'Returns an array of Task rows ordered by sibling position.',
@@ -114,7 +153,12 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'get_task',
-    description: 'Fetch a single task by id, including its direct children. Returns null if not found.',
+    description: [
+      'Fetch a single task by id with its direct children, attachments, and prompts.',
+      'Returns null if not found.',
+      'attachments[] — files attached to the task (filename, mimeType, sizeBytes, storage). Download URL: /api/files/<id>.',
+      'prompts[] — structured questions on this task. Read these on every turn: an answered prompt (status="answered") delivers the human\'s response in `answer`. Pending prompts mean you are still waiting.',
+    ].join(' '),
     inputSchemaZod: getTaskZod,
     inputSchemaJson: {
       type: 'object',
@@ -218,6 +262,141 @@ export const TOOLS: ToolDef[] = [
     handler: async (ctx, raw) => {
       const a = deleteTaskZod.parse(raw);
       return deleteTask(ctx, a.id);
+    },
+  },
+  {
+    name: 'attach_file_from_url',
+    description: [
+      'Attach a file (image, PDF, document) to a task by fetching a public http(s) URL server-side.',
+      'The server stores the bytes, computes a sha256, and returns attachment metadata.',
+      'Use for screenshots, generated images, reference PDFs, or any artifact you want the human (and later agent turns) to see on the task.',
+      'Source is auto-tagged "agent". Capped by GETSHIT_MAX_UPLOAD_MB (default 25). After upload, the file is available at /api/files/<id> and appears in get_task(taskId).attachments.',
+      'Prefer this over base64-in-args for any file beyond a few KB.',
+      'Tip: attachments can be referenced from ask_human(kind="pick_image") via option.attachmentId — useful when asking the human to pick between two images you generated.',
+    ].join(' '),
+    inputSchemaZod: attachFromUrlZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Task to attach to' },
+        url: { type: 'string', description: 'http(s) URL to fetch' },
+      },
+      required: ['taskId', 'url'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = attachFromUrlZod.parse(raw);
+      return addAttachmentFromUrl(ctx, a.taskId, a.url, 'agent');
+    },
+  },
+  {
+    name: 'list_attachments',
+    description: 'List attachments for a task.',
+    inputSchemaZod: listAttachmentsZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { taskId: { type: 'string' } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = listAttachmentsZod.parse(raw);
+      return listAttachments(ctx, a.taskId);
+    },
+  },
+  {
+    name: 'delete_attachment',
+    description: 'Delete an attachment. Owner-only.',
+    inputSchemaZod: deleteAttachmentZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = deleteAttachmentZod.parse(raw);
+      await deleteAttachment(ctx, a.id);
+      return { ok: true };
+    },
+  },
+  {
+    name: 'ask_human',
+    description: [
+      'Ask the task owner a structured question and end your turn.',
+      'kind: "text" (open answer) | "choice" (pick from options, set multiple=true to allow many) | "approval" (yes/no) | "pick_image" (option must have imageUrl or attachmentId).',
+      'Side effect: the task is automatically moved to status="review" with the owner as reviewer, so it appears in the human\'s unified "Needs your input" queue (the same bucket as work waiting for approval — one inbox for everything that needs the human).',
+      'Returns { id } immediately; the answer surfaces on a later get_task call as prompts[].answer once the human responds.',
+      'Do NOT poll. Exit your turn and continue work next time you are invoked — the human reading get_task again will show the answer in prompts[].',
+      'If you no longer need the answer, call cancel_prompt.',
+    ].join(' '),
+    inputSchemaZod: askHumanZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string' },
+        kind: { type: 'string', enum: ['text', 'choice', 'approval', 'pick_image'] },
+        prompt: { type: 'string', description: 'Plain-text question shown to the human' },
+        options: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              label: { type: 'string' },
+              description: { type: 'string' },
+              imageUrl: { type: 'string' },
+              attachmentId: { type: 'string' },
+            },
+            required: ['id', 'label'],
+            additionalProperties: false,
+          },
+        },
+        multiple: { type: 'boolean', description: 'Only meaningful for kind="choice"' },
+      },
+      required: ['taskId', 'kind', 'prompt'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = askHumanZod.parse(raw);
+      const prompt = await createPrompt(ctx, {
+        taskId: a.taskId,
+        kind: a.kind,
+        prompt: a.prompt,
+        ...(a.options ? { options: a.options } : {}),
+        ...(a.multiple !== undefined ? { multiple: a.multiple } : {}),
+      });
+      return { id: prompt.id };
+    },
+  },
+  {
+    name: 'list_prompts',
+    description: 'List all prompts (pending, answered, cancelled) for a task.',
+    inputSchemaZod: listPromptsZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { taskId: { type: 'string' } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = listPromptsZod.parse(raw);
+      return listPromptsForTask(ctx, a.taskId);
+    },
+  },
+  {
+    name: 'cancel_prompt',
+    description: 'Cancel a pending prompt. The asker or the task owner can cancel.',
+    inputSchemaZod: cancelPromptZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = cancelPromptZod.parse(raw);
+      return cancelPrompt(ctx, a.id);
     },
   },
   {
