@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import type { Context } from './context.js';
-import { createTask, deleteTask, getTask, listTasks, moveTask, updateTask } from './tasks.js';
+import {
+  createTask,
+  deleteTask,
+  getSubtree,
+  listTasks,
+  moveTask,
+  updateTask,
+} from './tasks.js';
+import type { TaskTree } from './tasks.js';
+import type { Task } from './schema.js';
 import {
   addAttachmentFromUrl,
   deleteAttachment,
@@ -13,6 +22,11 @@ import {
   promptKindSchema,
   promptOptionSchema,
 } from './prompts.js';
+import {
+  createComment,
+  deleteComment,
+  listCommentsForTask,
+} from './comments.js';
 
 /**
  * One tool, defined once and consumed by both transports:
@@ -53,15 +67,60 @@ const taskStatusEnum = [
 ] as const;
 const taskKindEnum = ['entity', 'project', 'task', 'goal', 'kpi'] as const;
 
+/**
+ * Whitelistable Task fields for MCP read tools. `id` is always returned;
+ * everything else is opt-in to keep default payloads small enough for agents
+ * to skim. Mirrors the `Task` shape minus `id` and `userId` (which agents
+ * shouldn't generally see — it leaks ownership across shared trees).
+ */
+const taskFieldEnum = [
+  'title',
+  'description',
+  'status',
+  'kind',
+  'rules',
+  'parentId',
+  'position',
+  'source',
+  'dueAt',
+  'assigneeId',
+  'reviewerId',
+  'recurrence',
+  'priority',
+  'createdAt',
+  'updatedAt',
+  'completedAt',
+] as const;
+type TaskField = (typeof taskFieldEnum)[number];
+
+const DEFAULT_TASK_FIELDS: readonly TaskField[] = ['title', 'dueAt'];
+
+function projectTask(t: Task, fields: readonly TaskField[]): Record<string, unknown> {
+  const out: Record<string, unknown> = { id: t.id };
+  for (const f of fields) out[f] = (t as unknown as Record<string, unknown>)[f];
+  return out;
+}
+
+function projectTree(node: TaskTree, fields: readonly TaskField[]): Record<string, unknown> {
+  return {
+    ...projectTask(node, fields),
+    children: node.children.map((c) => projectTree(c, fields)),
+  };
+}
+
 const listTasksZod = z.object({
   parentId: z.union([z.string(), z.null()]).optional(),
   status: z.enum(taskStatusEnum).optional(),
   kind: z.enum(taskKindEnum).optional(),
   assigneeId: z.union([z.string(), z.null()]).optional(),
   reviewerId: z.union([z.string(), z.null()]).optional(),
+  fields: z.array(z.enum(taskFieldEnum)).optional(),
 });
 
-const getTaskZod = z.object({ id: z.string() });
+const getTaskZod = z.object({
+  id: z.string(),
+  fields: z.array(z.enum(taskFieldEnum)).optional(),
+});
 
 const createTaskZod = z.object({
   title: z.string().min(1),
@@ -112,9 +171,21 @@ const askHumanZod = z.object({
 const cancelPromptZod = z.object({ id: z.string() });
 const listPromptsZod = z.object({ taskId: z.string() });
 
+const postCommentZod = z.object({
+  taskId: z.string(),
+  body: z.string().min(1).max(20000),
+});
+const listCommentsZod = z.object({ taskId: z.string() });
+const deleteCommentZod = z.object({ id: z.string() });
+
 const STATUS_PROP = { type: 'string' as const, enum: [...taskStatusEnum] };
 const KIND_PROP = { type: 'string' as const, enum: [...taskKindEnum] };
 const STR_OR_NULL = { type: ['string', 'null'] as const };
+const FIELDS_PROP = {
+  type: 'array' as const,
+  items: { type: 'string' as const, enum: [...taskFieldEnum] },
+  description: `Task fields to include on each row. Defaults to ["title","dueAt"]. \`id\` is always included. Pass an explicit list to opt into more (e.g. ["title","status","dueAt","assigneeId"]).`,
+};
 
 export const TOOLS: ToolDef[] = [
   {
@@ -125,7 +196,8 @@ export const TOOLS: ToolDef[] = [
       'Status: "open" (queued / next-up) | "doing" (active) | "review" (needs the human) | "done" (shipped) | "backlog" (noted, not now, no schedule — pulled when ready) | "snoozed" (hidden until a wake date) | "archived" (dead, kept for reference). The default views (Inbox, Today, project subtasks) exclude backlog/snoozed/archived; pass status explicitly to see them.',
       'Optional kind filter: "entity" (top-level company/area), "project" (a project under an entity), "task" (a to-do).',
       'Optional assigneeId / reviewerId filters: assignee is the doer; reviewer is who must approve when status="review".',
-      'Returns an array of Task rows ordered by sibling position.',
+      'Default response keeps payloads small: each row is `{ id, title, dueAt }`. Use `fields` to opt into more (e.g. `["title","status","dueAt","assigneeId"]`); `id` is always present.',
+      'Returns rows ordered by sibling position.',
     ].join(' '),
     inputSchemaZod: listTasksZod,
     inputSchemaJson: {
@@ -136,39 +208,61 @@ export const TOOLS: ToolDef[] = [
         kind: KIND_PROP,
         assigneeId: { ...STR_OR_NULL, description: 'Filter by assignee. null matches unassigned.' },
         reviewerId: { ...STR_OR_NULL, description: 'Filter by reviewer. null matches no reviewer.' },
+        fields: FIELDS_PROP,
       },
       additionalProperties: false,
     },
     handler: async (ctx, raw) => {
       const a = listTasksZod.parse(raw);
       const resolvedParent = a.parentId === undefined || a.parentId === 'root' ? null : a.parentId;
-      return listTasks(ctx, {
+      const fields = a.fields ?? DEFAULT_TASK_FIELDS;
+      const rows = await listTasks(ctx, {
         parentId: resolvedParent,
         ...(a.status ? { status: a.status } : {}),
         ...(a.kind ? { kind: a.kind } : {}),
         ...(a.assigneeId !== undefined ? { assigneeId: a.assigneeId } : {}),
         ...(a.reviewerId !== undefined ? { reviewerId: a.reviewerId } : {}),
       });
+      return rows.map((t) => projectTask(t, fields));
     },
   },
   {
     name: 'get_task',
     description: [
-      'Fetch a single task by id with its direct children, attachments, and prompts.',
+      'Fetch a single task by id with its full descendant tree (matches the web tree view), plus the task\'s attachments, prompts, and comments.',
       'Returns null if not found.',
-      'attachments[] — files attached to the task (filename, mimeType, sizeBytes, storage). Download URL: /api/files/<id>.',
-      'prompts[] — structured questions on this task. Read these on every turn: an answered prompt (status="answered") delivers the human\'s response in `answer`. Pending prompts mean you are still waiting.',
+      'Tree shape: each node is `{ id, ...selected fields, children: [...] }`. The whole subtree is included so one call is enough to orient on a project.',
+      'Default per-node payload is minimal: `{ id, title, dueAt, children }`. Use `fields` to opt into more (e.g. `["title","status","dueAt","assigneeId"]`); `id` and `children` are always present.',
+      'attachments[] — files attached to the root task (filename, mimeType, sizeBytes, storage). Download URL: /api/files/<id>.',
+      'prompts[] — structured questions on the root task. Read these on every turn: an answered prompt (status="answered") delivers the human\'s response in `answer`. Pending prompts mean you are still waiting.',
+      'comments[] — root task\'s free-form thread (oldest first). Always scan the tail before acting, especially on review/doing tasks — the human may have left feedback there since your last turn.',
     ].join(' '),
     inputSchemaZod: getTaskZod,
     inputSchemaJson: {
       type: 'object',
-      properties: { id: { type: 'string', description: 'Task id' } },
+      properties: {
+        id: { type: 'string', description: 'Task id' },
+        fields: FIELDS_PROP,
+      },
       required: ['id'],
       additionalProperties: false,
     },
     handler: async (ctx, raw) => {
       const a = getTaskZod.parse(raw);
-      return getTask(ctx, a.id);
+      const fields = a.fields ?? DEFAULT_TASK_FIELDS;
+      const tree = await getSubtree(ctx, a.id);
+      if (!tree) return null;
+      const [attachments, prompts, comments] = await Promise.all([
+        listAttachments(ctx, a.id),
+        listPromptsForTask(ctx, a.id),
+        listCommentsForTask(ctx, a.id),
+      ]);
+      return {
+        ...projectTree(tree, fields),
+        attachments,
+        prompts,
+        comments,
+      };
     },
   },
   {
@@ -397,6 +491,60 @@ export const TOOLS: ToolDef[] = [
     handler: async (ctx, raw) => {
       const a = cancelPromptZod.parse(raw);
       return cancelPrompt(ctx, a.id);
+    },
+  },
+  {
+    name: 'post_comment',
+    description: [
+      'Post a comment on a task. Use this for short status notes, observations, results you want the human to see, or non-blocking replies to feedback in the existing thread.',
+      'For blocking decisions (approval, choice, open question), use ask_human instead — that moves the task to "review" and surfaces it in the human\'s queue. post_comment does NOT change task status.',
+      'Body is markdown; renders the same as task descriptions.',
+      'Source is auto-tagged "agent". The comment shows up in get_task(taskId).comments[] (oldest first) and in the web UI thread.',
+    ].join(' '),
+    inputSchemaZod: postCommentZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string' },
+        body: { type: 'string', description: 'Comment body (markdown)' },
+      },
+      required: ['taskId', 'body'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = postCommentZod.parse(raw);
+      return createComment(ctx, { taskId: a.taskId, body: a.body, source: 'agent' });
+    },
+  },
+  {
+    name: 'list_comments',
+    description: 'List all comments on a task, oldest first. get_task already includes this — call list_comments only when you need the thread without the rest of the task payload.',
+    inputSchemaZod: listCommentsZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { taskId: { type: 'string' } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = listCommentsZod.parse(raw);
+      return listCommentsForTask(ctx, a.taskId);
+    },
+  },
+  {
+    name: 'delete_comment',
+    description: 'Delete a comment. Only the author or the task owner can delete.',
+    inputSchemaZod: deleteCommentZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = deleteCommentZod.parse(raw);
+      await deleteComment(ctx, a.id);
+      return { ok: true };
     },
   },
   {

@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/smoke.test.ts src/tasks.test.ts",
+    "test": "tsx --test src/smoke.test.ts src/tasks.test.ts src/mcp-tools.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
   },

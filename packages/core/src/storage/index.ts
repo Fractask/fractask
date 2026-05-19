@@ -1,9 +1,18 @@
 /**
  * Pluggable storage for task attachments.
  *
- * `local` (default) writes under GETSHIT_FILES_DIR — zero config, fits the
- * OSS self-host story. `s3` uses any S3-compatible endpoint (AWS, R2, MinIO,
- * B2) via @aws-sdk/client-s3, selected by GETSHIT_STORAGE=s3.
+ * Driver selection:
+ *  - If `GETSHIT_STORAGE` is set, it wins ("local" or "s3").
+ *  - Else, auto-detect: if all three S3 credentials env vars are present
+ *    (`GETSHIT_S3_BUCKET`, `GETSHIT_S3_ACCESS_KEY_ID`,
+ *    `GETSHIT_S3_SECRET_ACCESS_KEY`), use S3. Otherwise fall back to local.
+ *
+ * The auto-detect rule keeps the zero-config OSS path (no env → local file
+ * under GETSHIT_FILES_DIR) while stopping a remote MCP server that already
+ * has S3 creds in its env from silently writing to a throwaway local disk
+ * the human can't open. S3 works with any S3-compatible endpoint (AWS, R2,
+ * MinIO, B2) via @aws-sdk/client-s3. Force-local with `GETSHIT_STORAGE=local`
+ * if you need the credentials in env for some other purpose.
  *
  * Adapters expose four operations: put, getStream (for the local serve path),
  * getSignedUrl (returns null when the adapter can't presign, telling the
@@ -25,9 +34,19 @@ export interface StorageAdapter {
 
 let cached: Promise<StorageAdapter> | null = null;
 
+function resolveDriver(): 'local' | 's3' {
+  const explicit = process.env['GETSHIT_STORAGE']?.toLowerCase();
+  if (explicit === 's3' || explicit === 'local') return explicit;
+  const hasS3 =
+    !!process.env['GETSHIT_S3_BUCKET'] &&
+    !!process.env['GETSHIT_S3_ACCESS_KEY_ID'] &&
+    !!process.env['GETSHIT_S3_SECRET_ACCESS_KEY'];
+  return hasS3 ? 's3' : 'local';
+}
+
 export async function getStorage(): Promise<StorageAdapter> {
   if (cached) return cached;
-  const driver = (process.env['GETSHIT_STORAGE'] ?? 'local').toLowerCase();
+  const driver = resolveDriver();
   if (driver === 's3') {
     // Dynamic import keeps the AWS SDK out of the default-local cold path.
     cached = import('./s3.js').then((m) => m.createS3Adapter());
