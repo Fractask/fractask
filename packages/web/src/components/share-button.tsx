@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Share2, X } from 'lucide-react';
+import { Check, Copy, Share2, X } from 'lucide-react';
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import {
   listSharesAction,
@@ -49,6 +49,23 @@ export function ShareButton({ taskId, isOwner }: { taskId: string; isOwner: bool
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const taskUrl = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    return `${window.location.origin}/${taskId}`;
+  }, [taskId]);
+
+  const copyLink = async () => {
+    if (!taskUrl) return;
+    try {
+      await navigator.clipboard.writeText(taskUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError('Could not copy — try selecting the link and copying manually.');
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -143,6 +160,32 @@ export function ShareButton({ taskId, isOwner }: { taskId: string; isOwner: bool
               >
                 <X size={16} />
               </button>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <div className="text-[10px] uppercase tracking-wider text-(--color-muted)">
+                Link to this task
+              </div>
+              <div className="flex items-stretch gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={taskUrl}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="flex-1 min-w-0 bg-transparent border border-(--color-border) rounded px-3 py-2 text-xs font-mono outline-none focus:border-(--color-fg) truncate"
+                />
+                <button
+                  type="button"
+                  onClick={copyLink}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs rounded border border-(--color-border) hover:border-(--color-fg) shrink-0"
+                >
+                  {copied ? <Check size={12} /> : <Copy size={12} />}
+                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-(--color-muted)">
+                Anyone you share with can open this URL; non-collaborators get the standard 404.
+              </p>
             </div>
 
             {isOwner ? (
