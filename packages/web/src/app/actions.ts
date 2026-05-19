@@ -7,8 +7,10 @@ import {
   addAttachmentFromUrl as coreAddAttachmentFromUrl,
   answerPrompt as coreAnswerPrompt,
   cancelPrompt as coreCancelPrompt,
+  createComment as coreCreateComment,
   createTask as coreCreateTask,
   deleteAttachment as coreDeleteAttachment,
+  deleteComment as coreDeleteComment,
   deleteTask as coreDeleteTask,
   getTask as coreGetTask,
   moveTask as coreMoveTask,
@@ -20,6 +22,7 @@ import {
   type PromptAnswer,
   type Task,
   type TaskAttachment,
+  type TaskComment,
   type TaskKind,
   type TaskStatus,
 } from '@getshit/core';
@@ -155,6 +158,34 @@ export async function cancelPromptAction(promptId: string): Promise<ActionResult
     revalidatePath(`/${updated.taskId}`);
     revalidatePath('/awaiting');
     return { ok: true, value: updated };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function postCommentAction(
+  taskId: string,
+  body: string,
+): Promise<ActionResult<TaskComment>> {
+  try {
+    const ctx = await getRequestContext();
+    const comment = await coreCreateComment(ctx, { taskId, body, source: 'human' });
+    revalidatePath(`/${taskId}`);
+    return { ok: true, value: comment };
+  } catch (err) {
+    return { ok: false, error: toError(err) };
+  }
+}
+
+export async function deleteCommentAction(
+  id: string,
+  taskId: string,
+): Promise<ActionResult<void>> {
+  try {
+    const ctx = await getRequestContext();
+    await coreDeleteComment(ctx, id);
+    revalidatePath(`/${taskId}`);
+    return { ok: true, value: undefined };
   } catch (err) {
     return { ok: false, error: toError(err) };
   }
