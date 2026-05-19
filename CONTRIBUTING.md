@@ -17,14 +17,14 @@ If those three pass, you're ready.
 ## What we'll merge
 
 - Bug fixes with a test case.
-- New CLI commands or MCP tools that fit the existing six-primitives model (`list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`, `move_task`).
+- New CLI commands or MCP tools that fit the existing twelve-primitives model — task tree (`list_tasks`, `get_task`, `create_task`, `update_task`, `delete_task`, `move_task`), files (`attach_file_from_url`, `list_attachments`, `delete_attachment`), and human-in-the-loop (`ask_human`, `list_prompts`, `cancel_prompt`).
 - Web surface improvements that align with the [Fractask method](https://fractask.ai).
 - Documentation, examples, integrations with other agent runtimes.
 
 ## What we probably won't merge
 
 - New schema fields without a clear use case across CLI, MCP, and web.
-- New "specials" in the MCP (e.g. a `decompose` tool) — decomposition is a workflow agents drive with the six primitives, not a new tool.
+- New "specials" in the MCP (e.g. a `decompose` tool) — decomposition is a workflow agents drive with the twelve primitives, not a new tool.
 - Postgres support, multi-tenancy, billing — those live in the hosted product, not the OSS.
 
 ## Code style

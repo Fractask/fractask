@@ -143,7 +143,7 @@ See [`packages/web/.env.example`](packages/web/.env.example) for the full list.
 
 ## 🤖 Use it with Claude Code
 
-Fractask ships an MCP (Model Context Protocol) server. Eleven small primitives, grouped into three families — task tree, files, and human-in-the-loop. Decomposition (and most other workflows) is something the agent composes; there are no "macro" tools.
+Fractask ships an MCP (Model Context Protocol) server. Twelve small primitives, grouped into three families — task tree, files, and human-in-the-loop. Decomposition (and most other workflows) is something the agent composes; there are no "macro" tools.
 
 **Task tree**
 
@@ -187,7 +187,7 @@ claude mcp add --scope user fractask \
   -e GETSHIT_DB_AUTH_TOKEN="$GETSHIT_DB_AUTH_TOKEN"
 ```
 
-Confirm it loaded: in Claude Code, run `/mcp` and you should see `fractask` listed with eleven tools across the three families above.
+Confirm it loaded: in Claude Code, run `/mcp` and you should see `fractask` listed with twelve tools across the three families above.
 
 > **Solo-mode shortcut.** If you don't have a Turso DB yet, drop both `-e` flags. The MCP server falls back to `~/.getshit/db.sqlite` (the same file your CLI uses).
 
@@ -288,7 +288,7 @@ Same MCP server, different client config:
 
 If you're learning MCP, Fractask is a small enough surface to read end-to-end:
 
-- Eleven tools defined in one file: [`packages/core/src/mcp-tools.ts`](packages/core/src/mcp-tools.ts) — same `TOOLS` array drives stdio and HTTP transports
+- Twelve tools defined in one file: [`packages/core/src/mcp-tools.ts`](packages/core/src/mcp-tools.ts) — same `TOOLS` array drives stdio and HTTP transports
 - Each handler is a thin wrapper over a function in [`packages/core/src/tasks.ts`](packages/core/src/tasks.ts), [`attachments.ts`](packages/core/src/attachments.ts), or [`prompts.ts`](packages/core/src/prompts.ts)
 - No "specials" — every workflow (decompose, daily review, "wait for my approval") is composed by the agent from these primitives, not built in. That's the whole point of the Fractask method.
 
@@ -322,7 +322,7 @@ A pnpm monorepo: one `core` brain, three thin adapters that all share the same S
 packages/
   core   — schema, task CRUD, attachments, prompts, storage adapters, LLM abstraction
   cli    — fractask binary (clipanion)
-  mcp    — stdio + HTTP MCP server (eleven tools)
+  mcp    — stdio + HTTP MCP server (twelve tools)
   web    — Next.js 15 app (App Router, React 19, Tailwind v4)
 ```
 
