@@ -35,18 +35,32 @@ export async function GET(
     );
   }
 
-  const adapter = await getStorage();
-  const signed = await adapter.getSignedUrl(row.storageKey);
-  if (signed) {
-    return NextResponse.redirect(signed, 302);
+  try {
+    const adapter = await getStorage();
+    const signed = await adapter.getSignedUrl(row.storageKey);
+    if (signed) {
+      return NextResponse.redirect(signed, 302);
+    }
+    const { body, mimeType } = await adapter.getStream(row.storageKey);
+    return new Response(body, {
+      headers: {
+        'content-type': mimeType ?? row.mimeType,
+        'content-disposition': `inline; filename="${row.filename}"`,
+        'cache-control': 'private, max-age=60',
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const driver = process.env['GETSHIT_STORAGE'] ?? 'local';
+    const hasBucket = Boolean(process.env['GETSHIT_S3_BUCKET']);
+    const hasKey = Boolean(process.env['GETSHIT_S3_ACCESS_KEY_ID']);
+    return NextResponse.json(
+      {
+        error: 'storage_failed',
+        message: msg,
+        diag: { driver, hasBucket, hasKey, storageKey: row.storageKey },
+      },
+      { status: 500 },
+    );
   }
-
-  const { body, mimeType } = await adapter.getStream(row.storageKey);
-  return new Response(body, {
-    headers: {
-      'content-type': mimeType ?? row.mimeType,
-      'content-disposition': `inline; filename="${row.filename}"`,
-      'cache-control': 'private, max-age=60',
-    },
-  });
 }
