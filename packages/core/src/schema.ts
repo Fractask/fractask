@@ -215,6 +215,31 @@ export const agentPrompts = sqliteTable(
   }),
 );
 
+/**
+ * Free-form ordered conversation thread on a task. Humans and agents post into
+ * the same linear stream, displayed chronologically. Used for status notes,
+ * non-blocking questions, and review feedback. Blocking decisions still go
+ * through `agentPrompts` (ask_human) so they show up in the review queue.
+ */
+export const taskComments = sqliteTable(
+  'task_comments',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull(),
+    taskId: text('task_id').notNull(),
+    authorUserId: text('author_user_id').notNull(),
+    body: text('body').notNull(),
+    source: text('source', { enum: ['human', 'agent'] })
+      .notNull()
+      .default('human'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({
+    taskCreated: index('idx_task_comments_task_created').on(t.taskId, t.createdAt),
+    userTask: index('idx_task_comments_user_task').on(t.userId, t.taskId),
+  }),
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
@@ -240,3 +265,6 @@ export type NewAgentPromptRow = typeof agentPrompts.$inferInsert;
 export type AgentPromptKind = AgentPromptRow['kind'];
 export type AgentPromptStatus = AgentPromptRow['status'];
 export type AttachmentStorage = TaskAttachment['storage'];
+export type TaskComment = typeof taskComments.$inferSelect;
+export type NewTaskComment = typeof taskComments.$inferInsert;
+export type TaskCommentSource = TaskComment['source'];

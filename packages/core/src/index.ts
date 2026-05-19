@@ -7,6 +7,7 @@ export * from './tags.js';
 export * from './settings.js';
 export * from './attachments.js';
 export * from './prompts.js';
+export * from './comments.js';
 export * from './mcp-tools.js';
 export { getStorage, maxUploadBytes, type StorageAdapter } from './storage/index.js';
 export {

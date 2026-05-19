@@ -25,6 +25,8 @@ import {
 } from './schema.js';
 import { listAttachments } from './attachments.js';
 import { listPromptsForTask, type AgentPrompt } from './prompts.js';
+import { listCommentsForTask } from './comments.js';
+import type { TaskComment } from './schema.js';
 import {
   createTaskInputSchema,
   listTasksFilterSchema,
@@ -45,6 +47,7 @@ export type TaskWithChildren = Task & {
   children: Task[];
   attachments: TaskAttachment[];
   prompts: AgentPrompt[];
+  comments: TaskComment[];
 };
 export type TaskTree = Task & { children: TaskTree[] };
 export type TaskWithChildCount = Task & { childCount: number };
@@ -341,7 +344,7 @@ export async function getTask(ctx: Context, id: string): Promise<TaskWithChildre
     .where(and(eq(tasks.id, id), inArray(tasks.id, accessibleIds)));
   const row = rows[0];
   if (!row) return null;
-  const [children, attachments, prompts] = await Promise.all([
+  const [children, attachments, prompts, comments] = await Promise.all([
     db
       .select()
       .from(tasks)
@@ -349,8 +352,9 @@ export async function getTask(ctx: Context, id: string): Promise<TaskWithChildre
       .orderBy(asc(tasks.position), asc(tasks.createdAt)),
     listAttachments(ctx, id),
     listPromptsForTask(ctx, id),
+    listCommentsForTask(ctx, id),
   ]);
-  return { ...row, children, attachments, prompts };
+  return { ...row, children, attachments, prompts, comments };
 }
 
 /**
