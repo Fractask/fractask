@@ -30,6 +30,7 @@ import { TaskMetaBar } from '@/components/task-meta-bar';
 import { ShareButton } from '@/components/share-button';
 import { TaskPrompts } from '@/components/task-prompts';
 import { TaskAttachments } from '@/components/task-attachments';
+import { TaskComments } from '@/components/task-comments';
 import { ReviewActions } from '@/components/review-actions';
 import { BacklogSection } from '@/components/backlog-section';
 import { SortPicker } from '@/components/sort-picker';
@@ -179,6 +180,13 @@ export default async function FocusPage({
       </div>
 
       <TaskAttachments taskId={focused.id} attachments={focused.attachments} />
+
+      <TaskComments
+        taskId={focused.id}
+        comments={focused.comments}
+        currentUserId={ctx.userId}
+        ownerId={focused.userId}
+      />
 
       {(focused.kind === 'entity' || focused.kind === 'project') && (
         <div className="mb-6">

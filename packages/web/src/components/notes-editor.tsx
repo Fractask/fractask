@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from 'react';
 import { Sparkles, X, Pencil, Check } from 'lucide-react';
 import { generateNoteAction, updateTaskAction } from '@/app/actions';
 import { useStoredModelId } from './model-picker';
+import { MarkdownView } from './markdown-view';
 
 export function NotesEditor({
   id,
@@ -138,13 +139,13 @@ export function NotesEditor({
           </div>
         </div>
       ) : (
-        <div className="p-3 text-sm whitespace-pre-wrap min-h-[2.5rem]">
+        <div className="p-3 text-sm min-h-[2.5rem]">
           {value.length === 0 ? (
             <span className="text-(--color-muted) italic">
               No notes yet. Click Edit to write, or AI to generate.
             </span>
           ) : (
-            value
+            <MarkdownView source={value} />
           )}
         </div>
       )}
@@ -180,8 +181,8 @@ export function NotesEditor({
           </div>
           {aiError && <p className="text-xs text-red-400">{aiError}</p>}
           {draft && (
-            <div className="rounded border border-(--color-border) bg-(--color-bg) p-2 text-sm whitespace-pre-wrap">
-              {draft}
+            <div className="rounded border border-(--color-border) bg-(--color-bg) p-2 text-sm">
+              <MarkdownView source={draft} />
               <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-(--color-border) text-xs">
                 <button
                   onClick={() => setDraft(null)}
