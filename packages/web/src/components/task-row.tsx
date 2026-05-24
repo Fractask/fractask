@@ -86,6 +86,7 @@ export function TaskRow({
       ) : (
         <Link
           href={`/${task.id}`}
+          dir="auto"
           className={`flex-1 truncate text-sm ${isDone ? 'line-through text-(--color-muted)' : ''}`}
           data-task-link
         >
@@ -234,6 +235,7 @@ function RenameField({
   return (
     <input
       ref={ref}
+      dir="auto"
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onBlur={commit}

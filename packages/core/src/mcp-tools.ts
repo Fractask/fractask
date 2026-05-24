@@ -27,6 +27,15 @@ import {
   deleteComment,
   listCommentsForTask,
 } from './comments.js';
+import {
+  createBrainNote,
+  deleteBrainNote,
+  getBrainNote,
+  listBrainNotes,
+  moveBrainNote,
+  searchBrainNotes,
+  updateBrainNote,
+} from './brain.js';
 
 /**
  * One tool, defined once and consumed by both transports:
@@ -152,10 +161,16 @@ const moveTaskZod = z.object({
   position: z.number().int().nonnegative().optional(),
 });
 
-const attachFromUrlZod = z.object({
-  taskId: z.string(),
-  url: z.string().url(),
-});
+const attachFromUrlZod = z
+  .object({
+    taskId: z.string().optional(),
+    noteId: z.string().optional(),
+    url: z.string().url(),
+  })
+  .refine(
+    (v) => (v.taskId ? 1 : 0) + (v.noteId ? 1 : 0) === 1,
+    'Exactly one of taskId or noteId is required',
+  );
 
 const listAttachmentsZod = z.object({ taskId: z.string() });
 const deleteAttachmentZod = z.object({ id: z.string() });
@@ -177,6 +192,52 @@ const postCommentZod = z.object({
 });
 const listCommentsZod = z.object({ taskId: z.string() });
 const deleteCommentZod = z.object({ id: z.string() });
+
+// Brain-note tool argument schemas. Like other tools, "root" is accepted as an
+// alias for null on scope-shaped args so cli/MCP callers don't have to pass
+// JSON null.
+const listNotesZod = z.object({
+  scopeTaskId: z.union([z.string(), z.null()]).optional(),
+  parentNoteId: z.union([z.string(), z.null()]).optional(),
+  limit: z.number().int().positive().max(500).optional(),
+});
+const getNoteZod = z.object({
+  id: z.string(),
+  includeChildren: z.boolean().optional(),
+  format: z.enum(['text', 'json']).optional(),
+});
+const createNoteZod = z.object({
+  title: z.string().min(1),
+  icon: z.union([z.string(), z.null()]).optional(),
+  scopeTaskId: z.union([z.string(), z.null()]).optional(),
+  parentNoteId: z.union([z.string(), z.null()]).optional(),
+  contentText: z.string().optional(),
+  contentJson: z.unknown().optional(),
+});
+const updateNoteZod = z.object({
+  id: z.string(),
+  title: z.string().min(1).optional(),
+  icon: z.union([z.string(), z.null()]).optional(),
+  scopeTaskId: z.union([z.string(), z.null()]).optional(),
+  parentNoteId: z.union([z.string(), z.null()]).optional(),
+  contentText: z.string().optional(),
+  contentJson: z.unknown().optional(),
+});
+const deleteNoteZod = z.object({ id: z.string() });
+const moveNoteZod = z.object({
+  id: z.string(),
+  newParentNoteId: z.union([z.string(), z.null()]),
+  position: z.number().int().nonnegative().optional(),
+});
+const searchNotesZod = z.object({
+  query: z.string().min(1),
+  scopeTaskId: z.union([z.string(), z.null()]).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+function STR_OR_NULL_DESCRIBED(description: string) {
+  return { type: ['string', 'null'] as const, description };
+}
 
 const STATUS_PROP = { type: 'string' as const, enum: [...taskStatusEnum] };
 const KIND_PROP = { type: 'string' as const, enum: [...taskKindEnum] };
@@ -361,10 +422,11 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'attach_file_from_url',
     description: [
-      'Attach a file (image, PDF, document) to a task by fetching a public http(s) URL server-side.',
+      'Attach a file (image, PDF, document) to a task or brain note by fetching a public http(s) URL server-side.',
+      'Pass exactly one of taskId or noteId.',
       'The server stores the bytes, computes a sha256, and returns attachment metadata.',
-      'Use for screenshots, generated images, reference PDFs, or any artifact you want the human (and later agent turns) to see on the task.',
-      'Source is auto-tagged "agent". Capped by GETSHIT_MAX_UPLOAD_MB (default 25). After upload, the file is available at /api/files/<id> and appears in get_task(taskId).attachments.',
+      'Use for screenshots, generated images, reference PDFs, or any artifact you want the human (and later agent turns) to see.',
+      'Source is auto-tagged "agent". Capped by GETSHIT_MAX_UPLOAD_MB (default 25). After upload, the file is available at /api/files/<id> and appears in get_task(taskId).attachments or get_note(noteId).attachments.',
       'Prefer this over base64-in-args for any file beyond a few KB.',
       'Tip: attachments can be referenced from ask_human(kind="pick_image") via option.attachmentId — useful when asking the human to pick between two images you generated.',
     ].join(' '),
@@ -372,15 +434,24 @@ export const TOOLS: ToolDef[] = [
     inputSchemaJson: {
       type: 'object',
       properties: {
-        taskId: { type: 'string', description: 'Task to attach to' },
+        taskId: { type: 'string', description: 'Task to attach to (exactly one of taskId/noteId)' },
+        noteId: { type: 'string', description: 'Brain note to attach to (exactly one of taskId/noteId)' },
         url: { type: 'string', description: 'http(s) URL to fetch' },
       },
-      required: ['taskId', 'url'],
+      required: ['url'],
       additionalProperties: false,
     },
     handler: async (ctx, raw) => {
       const a = attachFromUrlZod.parse(raw);
-      return addAttachmentFromUrl(ctx, a.taskId, a.url, 'agent');
+      return addAttachmentFromUrl(
+        ctx,
+        {
+          ...(a.taskId ? { taskId: a.taskId } : {}),
+          ...(a.noteId ? { brainNoteId: a.noteId } : {}),
+        },
+        a.url,
+        'agent',
+      );
     },
   },
   {
@@ -545,6 +616,262 @@ export const TOOLS: ToolDef[] = [
       const a = deleteCommentZod.parse(raw);
       await deleteComment(ctx, a.id);
       return { ok: true };
+    },
+  },
+  {
+    name: 'list_notes',
+    description: [
+      'List brain notes the current user can read.',
+      'scopeTaskId="root" or null lists personal (scope-less) notes; pass an entity or project task id to list notes scoped to it.',
+      'parentNoteId=null lists top-level notes (under the chosen scope); pass a note id for direct children of that note.',
+      'Brain notes are the persistent knowledge base — company voice, brand, project background, references. Read before acting on scoped work.',
+      'Default response is `{ id, title, icon, parentNoteId, scopeTaskId }` per row, ordered by sibling position.',
+    ].join(' '),
+    inputSchemaZod: listNotesZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        scopeTaskId: {
+          ...STR_OR_NULL,
+          description: 'Entity or project task id, null/"root" for personal notes',
+        },
+        parentNoteId: { ...STR_OR_NULL, description: 'Parent note id, null for top of the scope' },
+        limit: { type: 'integer', minimum: 1, maximum: 500 },
+      },
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = listNotesZod.parse(raw);
+      const scopeTaskId = a.scopeTaskId === 'root' ? null : a.scopeTaskId;
+      const parentNoteId = a.parentNoteId === 'root' ? null : a.parentNoteId;
+      const rows = await listBrainNotes(ctx, {
+        ...(scopeTaskId !== undefined ? { scopeTaskId } : {}),
+        ...(parentNoteId !== undefined ? { parentNoteId } : {}),
+        ...(a.limit !== undefined ? { limit: a.limit } : {}),
+      });
+      return rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        icon: r.icon,
+        parentNoteId: r.parentNoteId,
+        scopeTaskId: r.scopeTaskId,
+      }));
+    },
+  },
+  {
+    name: 'get_note',
+    description: [
+      'Fetch a single brain note by id. Default payload is text-focused for LLM use:',
+      '`{ id, title, icon, scopeTaskId, parentNoteId, contentText, attachments, children? }`.',
+      'Pass `format="json"` to also get the canonical `contentJson` (Tiptap doc) — only needed when round-tripping content back into update_note.',
+      'Pass `includeChildren=true` to include direct child notes.',
+      'Returns null if not found / not accessible.',
+    ].join(' '),
+    inputSchemaZod: getNoteZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        includeChildren: { type: 'boolean' },
+        format: { type: 'string', enum: ['text', 'json'] },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = getNoteZod.parse(raw);
+      const note = await getBrainNote(ctx, a.id);
+      if (!note) return null;
+      const out: Record<string, unknown> = {
+        id: note.id,
+        title: note.title,
+        icon: note.icon,
+        scopeTaskId: note.scopeTaskId,
+        parentNoteId: note.parentNoteId,
+        contentText: note.contentText,
+        attachments: note.attachments,
+        createdAt: note.createdAt,
+        updatedAt: note.updatedAt,
+      };
+      if (a.format === 'json') {
+        try {
+          out['contentJson'] = JSON.parse(note.contentJson);
+        } catch {
+          out['contentJson'] = null;
+        }
+      }
+      if (a.includeChildren) {
+        out['children'] = note.children.map((c) => ({
+          id: c.id,
+          title: c.title,
+          icon: c.icon,
+        }));
+      }
+      return out;
+    },
+  },
+  {
+    name: 'create_note',
+    description: [
+      'Create a brain note (a persistent knowledge-base page) the user and other agents can read in future sessions.',
+      'Use this for durable context: company voice, brand, decisions, references, prompt templates, anything that should outlive a chat thread.',
+      'scopeTaskId scopes the note to an entity OR project task; omit/null for a personal/global note.',
+      'parentNoteId nests this note under another note for hierarchy.',
+      'BODY: pass EITHER `contentJson` (preferred — Tiptap doc with real headings/bold/italic/lists/links) OR `contentText` (plain text only — blank lines split paragraphs, single newlines become line breaks).',
+      'IMPORTANT: `contentText` is NOT parsed as markdown. `##`, `**`, `-`, table pipes, etc. render as literal characters. For any formatting use `contentJson` — see the Brain notes section of the server instructions for the node schema.',
+      'Source is auto-tagged "agent". Returns `{ id }`. Read the new note back with get_note.',
+    ].join(' '),
+    inputSchemaZod: createNoteZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short title (one line)' },
+        icon: STR_OR_NULL_DESCRIBED('Single emoji icon (e.g. 📒)'),
+        scopeTaskId: {
+          ...STR_OR_NULL,
+          description: 'Entity or project task id; null for personal',
+        },
+        parentNoteId: { ...STR_OR_NULL, description: 'Parent note id; null for top-level' },
+        contentText: {
+          type: 'string',
+          description:
+            'Plain-text body. NOT parsed as markdown — `##`, `**`, table pipes etc. render literally. Use contentJson for any formatting.',
+        },
+        contentJson: {
+          type: 'object',
+          description:
+            'Tiptap doc (preferred for formatted notes). Shape: `{type:"doc",content:[…]}`. Block nodes: paragraph, heading (attrs.level 1-3), bulletList/orderedList+listItem, blockquote, codeBlock, horizontalRule, hardBreak. Inline marks: bold, italic, strike, code, link (attrs.href). See the Brain notes section of the server instructions for examples.',
+        },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = createNoteZod.parse(raw);
+      const created = await createBrainNote(ctx, {
+        title: a.title,
+        ...(a.icon !== undefined ? { icon: a.icon } : {}),
+        ...(a.scopeTaskId !== undefined ? { scopeTaskId: a.scopeTaskId } : {}),
+        ...(a.parentNoteId !== undefined ? { parentNoteId: a.parentNoteId } : {}),
+        ...(a.contentText !== undefined ? { contentText: a.contentText } : {}),
+        ...(a.contentJson !== undefined ? { contentJson: a.contentJson } : {}),
+        source: 'agent',
+      });
+      return { id: created.id };
+    },
+  },
+  {
+    name: 'update_note',
+    description: [
+      'Update fields on a brain note. Only provided fields change.',
+      'BODY: pass EITHER `contentJson` (preferred for any formatted note — headings, bold, italic, lists, links) OR `contentText` (plain text only — blank lines split paragraphs, single newlines become line breaks).',
+      'IMPORTANT: `contentText` is NOT parsed as markdown. `##`, `**`, `-`, table pipes, etc. render as literal characters. If you want headings/bold/italic/lists, you MUST pass `contentJson` as a Tiptap doc. See the Brain notes section of the server instructions for the node schema and examples.',
+      'Round-trip safe: `get_note(id, format="json")` returns the canonical `contentJson` you can mutate and pass back.',
+      'Pass `scopeTaskId` (null to detach) or `parentNoteId` to re-scope / re-parent.',
+    ].join(' '),
+    inputSchemaZod: updateNoteZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        icon: STR_OR_NULL,
+        scopeTaskId: STR_OR_NULL,
+        parentNoteId: STR_OR_NULL,
+        contentText: {
+          type: 'string',
+          description:
+            'Plain-text body. NOT parsed as markdown — `##`, `**`, table pipes etc. render literally. Use contentJson for any formatting.',
+        },
+        contentJson: {
+          type: 'object',
+          description:
+            'Tiptap doc (preferred for formatted notes). Shape: `{type:"doc",content:[…]}`. Block nodes: paragraph, heading (attrs.level 1-3), bulletList/orderedList+listItem, blockquote, codeBlock, horizontalRule, hardBreak. Inline marks: bold, italic, strike, code, link (attrs.href). See the Brain notes section of the server instructions for examples.',
+        },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = updateNoteZod.parse(raw);
+      const updated = await updateBrainNote(ctx, a.id, {
+        ...(a.title !== undefined ? { title: a.title } : {}),
+        ...(a.icon !== undefined ? { icon: a.icon } : {}),
+        ...(a.scopeTaskId !== undefined ? { scopeTaskId: a.scopeTaskId } : {}),
+        ...(a.parentNoteId !== undefined ? { parentNoteId: a.parentNoteId } : {}),
+        ...(a.contentText !== undefined ? { contentText: a.contentText } : {}),
+        ...(a.contentJson !== undefined ? { contentJson: a.contentJson } : {}),
+      });
+      return { id: updated.id };
+    },
+  },
+  {
+    name: 'delete_note',
+    description: 'Delete a brain note and all of its descendants. Owner-only. Returns the deleted ids.',
+    inputSchemaZod: deleteNoteZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = deleteNoteZod.parse(raw);
+      return deleteBrainNote(ctx, a.id);
+    },
+  },
+  {
+    name: 'move_note',
+    description: [
+      'Re-parent a brain note. newParentNoteId="root" or null promotes the note to a top-level note within its current scope.',
+      'Optional position inserts at that sibling index.',
+      'Cycles (moving a note under one of its own descendants) are rejected.',
+    ].join(' '),
+    inputSchemaZod: moveNoteZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        newParentNoteId: { ...STR_OR_NULL, description: 'New parent note id, null/"root" to promote' },
+        position: { type: 'integer', minimum: 0 },
+      },
+      required: ['id', 'newParentNoteId'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = moveNoteZod.parse(raw);
+      const target = a.newParentNoteId === 'root' ? null : a.newParentNoteId;
+      return moveBrainNote(ctx, a.id, target, a.position);
+    },
+  },
+  {
+    name: 'search_notes',
+    description: [
+      'Substring search across brain note titles and body text (the plain-text mirror of the editor content).',
+      'Scoped to notes the user can read. Pass scopeTaskId to restrict to one entity or project, null/"root" to restrict to personal notes.',
+      'Returns `[{ id, title, icon, snippet, updatedAt }]` ordered by recency.',
+    ].join(' '),
+    inputSchemaZod: searchNotesZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1 },
+        scopeTaskId: {
+          ...STR_OR_NULL,
+          description: 'Restrict to entity/project (null for personal-only)',
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = searchNotesZod.parse(raw);
+      const scopeTaskId = a.scopeTaskId === 'root' ? null : a.scopeTaskId;
+      return searchBrainNotes(ctx, a.query, {
+        ...(scopeTaskId !== undefined ? { scopeTaskId } : {}),
+        ...(a.limit !== undefined ? { limit: a.limit } : {}),
+      });
     },
   },
   {

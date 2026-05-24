@@ -1,10 +1,11 @@
 import {
   ensureSelfAssignee,
+  listAllAccessibleBrainNotes,
   listTags,
   listTasks,
   listTasksWithChildCount,
 } from '@getshit/core';
-import type { TaskWithChildCount } from '@getshit/core';
+import type { BrainNote, TaskWithChildCount } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 import { signOutAction } from '@/app/auth/signin/actions';
 import {
@@ -14,6 +15,10 @@ import {
   SidebarTagItem,
 } from './sidebar-nav';
 import { SidebarSearch } from './sidebar-search';
+import {
+  BrainSidebarGroup,
+  EntityBrainLink,
+} from './brain/brain-sidebar';
 import { Logo } from './logo';
 import { ThemeToggle } from './theme-toggle';
 
@@ -40,6 +45,7 @@ export async function Sidebar() {
     snoozed,
     tags,
     reviewsForMe,
+    allNotes,
   ] = await Promise.all([
     listTasks(ctx, { parentId: null, status: 'open' }),
     listTasks(ctx, { dueBefore: startOfTomorrow(), status: 'open' }),
@@ -52,7 +58,26 @@ export async function Sidebar() {
     listTasks(ctx, { status: 'snoozed' }),
     listTags(ctx),
     listTasks(ctx, { reviewerId: me.id, status: 'review' }),
+    listAllAccessibleBrainNotes(ctx),
   ]);
+  const accessibleNoteIds = new Set(allNotes.map((n) => n.id));
+  const personalNotes = allNotes.filter((n) => n.scopeTaskId === null);
+  const personalRoots = personalNotes.filter(
+    (n) => n.parentNoteId === null || !accessibleNoteIds.has(n.parentNoteId),
+  );
+  const notesByScope = new Map<string, BrainNote[]>();
+  for (const n of allNotes) {
+    if (!n.scopeTaskId) continue;
+    const arr = notesByScope.get(n.scopeTaskId) ?? [];
+    arr.push(n);
+    notesByScope.set(n.scopeTaskId, arr);
+  }
+  const scopeRootNotes = (scopeTaskId: string) => {
+    const list = notesByScope.get(scopeTaskId) ?? [];
+    return list.filter(
+      (n) => n.parentNoteId === null || !accessibleNoteIds.has(n.parentNoteId),
+    );
+  };
   const goalsKpisCount = goals.length + kpis.length;
 
   // Hide done tasks from the sidebar — they clutter once shipped.
@@ -94,17 +119,36 @@ export async function Sidebar() {
           <SidebarStaticItem
             item={{ href: '/goals', label: 'Goals & KPIs', icon: 'goals', count: goalsKpisCount }}
           />
+          <BrainSidebarGroup
+            personalRoots={personalRoots}
+            totalCount={allNotes.length}
+          />
         </div>
 
         {entities.map((e) => {
           const projects = projectsByEntity.get(e.id) ?? [];
+          const entityNotes = scopeRootNotes(e.id);
           return (
-            <SidebarEntityGroup
-              key={e.id}
-              id={e.id}
-              title={e.title}
-              projects={projects.map((p) => ({ id: p.id, title: p.title, count: p.childCount }))}
-            />
+            <div key={e.id}>
+              <SidebarEntityGroup
+                id={e.id}
+                title={e.title}
+                projects={projects.map((p) => ({ id: p.id, title: p.title, count: p.childCount }))}
+              />
+              <EntityBrainLink scope={{ id: e.id, title: e.title }} notes={entityNotes} />
+              {projects.map((p) => {
+                const projectNotes = scopeRootNotes(p.id);
+                if (projectNotes.length === 0) return null;
+                return (
+                  <EntityBrainLink
+                    key={p.id}
+                    scope={{ id: p.id, title: p.title }}
+                    notes={projectNotes}
+                    depth={2}
+                  />
+                );
+              })}
+            </div>
           );
         })}
 

@@ -103,6 +103,7 @@ export function NotesEditor({
         <div className="p-3 flex flex-col gap-2">
           <textarea
             ref={ref}
+            dir="auto"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {

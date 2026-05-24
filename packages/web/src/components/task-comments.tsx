@@ -118,6 +118,7 @@ export function TaskComments({
 
       <div className="px-3 py-2 border-t border-(--color-border) flex flex-col gap-2">
         <textarea
+          dir="auto"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {

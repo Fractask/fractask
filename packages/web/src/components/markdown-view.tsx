@@ -12,25 +12,25 @@ const mdComponents = {
     />
   ),
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p {...props} className="my-2 first:mt-0 last:mb-0 leading-relaxed" />
+    <p dir="auto" {...props} className="my-2 first:mt-0 last:mb-0 leading-relaxed" />
   ),
   ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul {...props} className="my-2 pl-5 list-disc space-y-1" />
+    <ul dir="auto" {...props} className="my-2 ps-5 list-disc space-y-1" />
   ),
   ol: (props: React.OlHTMLAttributes<HTMLOListElement>) => (
-    <ol {...props} className="my-2 pl-5 list-decimal space-y-1" />
+    <ol dir="auto" {...props} className="my-2 ps-5 list-decimal space-y-1" />
   ),
   li: (props: React.LiHTMLAttributes<HTMLLIElement>) => (
-    <li {...props} className="leading-relaxed" />
+    <li dir="auto" {...props} className="leading-relaxed" />
   ),
   h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h1 {...props} className="text-base font-semibold mt-3 mb-2 first:mt-0" />
+    <h1 dir="auto" {...props} className="text-base font-semibold mt-3 mb-2 first:mt-0" />
   ),
   h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h2 {...props} className="text-sm font-semibold mt-3 mb-2 first:mt-0" />
+    <h2 dir="auto" {...props} className="text-sm font-semibold mt-3 mb-2 first:mt-0" />
   ),
   h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h3 {...props} className="text-sm font-semibold mt-2 mb-1 first:mt-0" />
+    <h3 dir="auto" {...props} className="text-sm font-semibold mt-2 mb-1 first:mt-0" />
   ),
   code: ({ className, children, ...rest }: React.HTMLAttributes<HTMLElement>) => {
     const isBlock = /language-/.test(className ?? '');
@@ -55,23 +55,25 @@ const mdComponents = {
   ),
   blockquote: (props: React.HTMLAttributes<HTMLQuoteElement>) => (
     <blockquote
+      dir="auto"
       {...props}
-      className="my-2 pl-3 border-l-2 border-(--color-border) text-(--color-muted)"
+      className="my-2 ps-3 border-s-2 border-(--color-border) text-(--color-muted)"
     />
   ),
   table: (props: React.HTMLAttributes<HTMLTableElement>) => (
     <div className="my-2 overflow-x-auto">
-      <table {...props} className="text-xs border-collapse" />
+      <table dir="auto" {...props} className="text-xs border-collapse" />
     </div>
   ),
   th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => (
     <th
+      dir="auto"
       {...props}
-      className="px-2 py-1 border border-(--color-border) bg-(--color-surface) font-semibold text-left"
+      className="px-2 py-1 border border-(--color-border) bg-(--color-surface) font-semibold text-start"
     />
   ),
   td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => (
-    <td {...props} className="px-2 py-1 border border-(--color-border) align-top" />
+    <td dir="auto" {...props} className="px-2 py-1 border border-(--color-border) align-top" />
   ),
   img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
     // eslint-disable-next-line @next/next/no-img-element
@@ -88,12 +90,14 @@ const mdComponents = {
 
 export function MarkdownView({ source }: { source: string }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize]}
-      components={mdComponents}
-    >
-      {source}
-    </ReactMarkdown>
+    <div dir="auto">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+        components={mdComponents}
+      >
+        {source}
+      </ReactMarkdown>
+    </div>
   );
 }
