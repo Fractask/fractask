@@ -8,11 +8,14 @@ export * from './settings.js';
 export * from './attachments.js';
 export * from './prompts.js';
 export * from './comments.js';
+export * from './brain.js';
 export * from './mcp-tools.js';
 export { getStorage, maxUploadBytes, type StorageAdapter } from './storage/index.js';
 export {
   getAccessibleTaskIds,
+  getAccessibleNoteIds,
   assertAccessibleExists,
+  assertAccessibleNoteExists,
   assertOwnedExists,
 } from './access.js';
 export {

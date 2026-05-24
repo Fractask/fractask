@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Context } from './context.js';
 import { getDb } from './db/client.js';
-import { tasks, type Task } from './schema.js';
+import { tasks, type BrainNote, type Task } from './schema.js';
 
 export class NotFoundError extends Error {
   constructor(id: string) {
@@ -84,6 +84,74 @@ export async function assertOwnedExists(ctx: Context, id: string): Promise<Task>
   // Not owned — distinguish "doesn't exist / not accessible" from "exists but shared with me".
   await assertAccessibleExists(ctx, id);
   throw new ForbiddenError(id);
+}
+
+/**
+ * Returns brain note IDs accessible to ctx.userId. Personal notes
+ * (scope_task_id IS NULL) require ownership; scoped notes ride the task_shares
+ * subtree closure of their scope task (an entity or project).
+ */
+export async function getAccessibleNoteIds(ctx: Context): Promise<string[]> {
+  const db = getDb();
+  const rows = await db.all<{ id: string }>(sql`
+    WITH RECURSIVE roots(id) AS (
+      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
+      UNION
+      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
+    ),
+    accessible(id) AS (
+      SELECT id FROM roots
+      UNION
+      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
+    )
+    SELECT id FROM brain_notes
+     WHERE (scope_task_id IS NULL AND user_id = ${ctx.userId})
+        OR scope_task_id IN (SELECT id FROM accessible)
+  `);
+  return rows.map((r) => r.id);
+}
+
+export async function assertAccessibleNoteExists(
+  ctx: Context,
+  id: string,
+): Promise<BrainNote> {
+  const db = getDb();
+  const rows = await db.all<Record<string, unknown>>(sql`
+    WITH RECURSIVE roots(id) AS (
+      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
+      UNION
+      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
+    ),
+    accessible(id) AS (
+      SELECT id FROM roots
+      UNION
+      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
+    )
+    SELECT * FROM brain_notes
+     WHERE id = ${id}
+       AND ((scope_task_id IS NULL AND user_id = ${ctx.userId})
+            OR scope_task_id IN (SELECT id FROM accessible))
+  `);
+  const row = rows[0];
+  if (!row) throw new NotFoundError(id);
+  return rowToBrainNote(row);
+}
+
+function rowToBrainNote(r: Record<string, unknown>): BrainNote {
+  return {
+    id: r['id'] as string,
+    userId: r['user_id'] as string,
+    scopeTaskId: (r['scope_task_id'] as string | null) ?? null,
+    parentNoteId: (r['parent_note_id'] as string | null) ?? null,
+    title: r['title'] as string,
+    icon: (r['icon'] as string | null) ?? null,
+    contentJson: r['content_json'] as string,
+    contentText: r['content_text'] as string,
+    position: r['position'] as number,
+    source: r['source'] as BrainNote['source'],
+    createdAt: r['created_at'] as number,
+    updatedAt: r['updated_at'] as number,
+  };
 }
 
 function rowToTask(r: Record<string, unknown>): Task {

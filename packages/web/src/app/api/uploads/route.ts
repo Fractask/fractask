@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
  * POST /api/uploads
  *
  * Multipart upload. Expects:
- *   - taskId: text field
+ *   - taskId OR brainNoteId: text field (exactly one)
  *   - file:   one or more File parts
  *
  * Returns the created attachment rows. Bound by GETSHIT_MAX_UPLOAD_MB
@@ -31,9 +31,16 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: 'invalid multipart body' }, { status: 400 });
   }
 
-  const taskId = form.get('taskId');
-  if (typeof taskId !== 'string' || taskId.length === 0) {
-    return NextResponse.json({ error: 'taskId required' }, { status: 400 });
+  const taskIdRaw = form.get('taskId');
+  const brainNoteIdRaw = form.get('brainNoteId');
+  const taskId = typeof taskIdRaw === 'string' && taskIdRaw.length > 0 ? taskIdRaw : null;
+  const brainNoteId =
+    typeof brainNoteIdRaw === 'string' && brainNoteIdRaw.length > 0 ? brainNoteIdRaw : null;
+  if (!taskId && !brainNoteId) {
+    return NextResponse.json({ error: 'taskId or brainNoteId required' }, { status: 400 });
+  }
+  if (taskId && brainNoteId) {
+    return NextResponse.json({ error: 'pass exactly one of taskId or brainNoteId' }, { status: 400 });
   }
 
   const files: File[] = [];
@@ -59,7 +66,8 @@ export async function POST(req: Request): Promise<Response> {
       files.map(async (f) => {
         const bytes = new Uint8Array(await f.arrayBuffer());
         return createAttachment(ctx, {
-          taskId,
+          ...(taskId ? { taskId } : {}),
+          ...(brainNoteId ? { brainNoteId } : {}),
           filename: f.name,
           mimeType: f.type || 'application/octet-stream',
           body: bytes,

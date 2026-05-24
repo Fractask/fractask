@@ -197,9 +197,7 @@ export async function answerPrompt(
   if (!row) throw new NotFoundError(id);
   if (row.status !== 'pending') throw new Error(`Prompt is already ${row.status}`);
 
-  // Phase 1: only the task owner answers. Widening to assignee/reviewer is a
-  // later change.
-  await assertOwnedExists(ctx, row.taskId);
+  await assertAccessibleExists(ctx, row.taskId);
 
   const parsedAnswer = promptAnswerSchema.parse(rawAnswer);
   validateAnswerShape(row, parsedAnswer);

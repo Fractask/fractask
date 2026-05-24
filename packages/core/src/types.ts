@@ -102,17 +102,41 @@ export const updateTagInputSchema = z
   .partial();
 export type UpdateTagInput = z.infer<typeof updateTagInputSchema>;
 
-export const createContextDocInputSchema = z.object({
-  taskId: idSchema,
-  title: z.string().min(1).max(200),
-  content: z.string().max(200_000),
-});
-export type CreateContextDocInput = z.infer<typeof createContextDocInputSchema>;
+// Tiptap content is stored opaquely (JSON.stringified on write, parsed by the
+// editor on read), so we accept any value here. Concrete shape validation
+// would conflict with Tiptap v3's getJSON, which can include function getters
+// on attrs in some serialization paths. The server-side `deriveContent` runs
+// a JSON round-trip to strip any non-plain values before persistence.
+export const tiptapDocSchema: z.ZodTypeAny = z.unknown();
 
-export const updateContextDocInputSchema = z
+export const createBrainNoteInputSchema = z.object({
+  title: z.string().min(1).max(500),
+  icon: z.string().max(16).nullable().optional(),
+  scopeTaskId: idSchema.nullable().optional(),
+  parentNoteId: idSchema.nullable().optional(),
+  contentJson: tiptapDocSchema.optional(),
+  contentText: z.string().max(200_000).optional(),
+  source: z.enum(['human', 'agent']).optional(),
+});
+export type CreateBrainNoteInput = z.infer<typeof createBrainNoteInputSchema>;
+
+export const updateBrainNoteInputSchema = z
   .object({
-    title: z.string().min(1).max(200),
-    content: z.string().max(200_000),
+    title: z.string().min(1).max(500),
+    icon: z.string().max(16).nullable(),
+    scopeTaskId: idSchema.nullable(),
+    parentNoteId: idSchema.nullable(),
+    contentJson: tiptapDocSchema,
+    contentText: z.string().max(200_000),
   })
   .partial();
-export type UpdateContextDocInput = z.infer<typeof updateContextDocInputSchema>;
+export type UpdateBrainNoteInput = z.infer<typeof updateBrainNoteInputSchema>;
+
+export const listBrainNotesFilterSchema = z
+  .object({
+    scopeTaskId: idSchema.nullable().optional(),
+    parentNoteId: idSchema.nullable().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  })
+  .default({});
+export type ListBrainNotesFilter = z.infer<typeof listBrainNotesFilterSchema>;

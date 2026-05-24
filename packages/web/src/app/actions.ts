@@ -128,7 +128,7 @@ export async function addAttachmentByUrlAction(
 ): Promise<ActionResult<TaskAttachment>> {
   try {
     const ctx = await getRequestContext();
-    const att = await coreAddAttachmentFromUrl(ctx, taskId, url, 'human');
+    const att = await coreAddAttachmentFromUrl(ctx, { taskId }, url, 'human');
     revalidatePath(`/${taskId}`);
     return { ok: true, value: att };
   } catch (err) {

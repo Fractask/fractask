@@ -49,6 +49,7 @@ export function EditableHeading({
     return (
       <input
         ref={ref}
+        dir="auto"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={commit}
@@ -71,6 +72,7 @@ export function EditableHeading({
   return (
     <div className="group flex items-center gap-2 min-w-0">
       <h1
+        dir="auto"
         onDoubleClick={() => setEditing(true)}
         title="Double-click to rename"
         className={`text-xl font-medium tracking-tight break-words ${done ? 'line-through text-(--color-muted)' : ''}`}

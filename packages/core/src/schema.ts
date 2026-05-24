@@ -61,19 +61,38 @@ export const tasks = sqliteTable(
   }),
 );
 
-export const contextDocs = sqliteTable(
-  'context_docs',
+/**
+ * Brain notes — the persistent, Notion-like knowledge base.
+ * A note is owned by a user, optionally scoped to a parent task (entity or
+ * project — null = personal/global), and hierarchical via parentNoteId.
+ * Content is stored as Tiptap JSON (canonical) plus a derived plain-text
+ * mirror for search and MCP payloads.
+ *
+ * ACL: notes with a scopeTaskId inherit access from that task's task_shares
+ * subtree closure; personal notes (scopeTaskId null) are owner-only.
+ */
+export const brainNotes = sqliteTable(
+  'brain_notes',
   {
     id: text('id').primaryKey(),
     userId: text('user_id').notNull(),
-    taskId: text('task_id').notNull(),
+    scopeTaskId: text('scope_task_id'),
+    parentNoteId: text('parent_note_id'),
     title: text('title').notNull(),
-    content: text('content').notNull(),
+    icon: text('icon'),
+    contentJson: text('content_json').notNull().default('{"type":"doc","content":[]}'),
+    contentText: text('content_text').notNull().default(''),
+    position: integer('position').notNull().default(0),
+    source: text('source', { enum: ['human', 'agent'] })
+      .notNull()
+      .default('human'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => ({
-    userTask: index('idx_context_docs_user_task').on(t.userId, t.taskId),
+    userParent: index('idx_brain_notes_user_parent').on(t.userId, t.parentNoteId),
+    userScope: index('idx_brain_notes_user_scope').on(t.userId, t.scopeTaskId),
+    scopeParent: index('idx_brain_notes_scope_parent').on(t.scopeTaskId, t.parentNoteId),
   }),
 );
 
@@ -164,7 +183,11 @@ export const taskAttachments = sqliteTable(
   {
     id: text('id').primaryKey(),
     userId: text('user_id').notNull(),
-    taskId: text('task_id').notNull(),
+    // Exactly one of taskId / brainNoteId is set. Polymorphic owner so the same
+    // storage/listing/download path serves both tasks and brain notes without
+    // duplicating the adapter abstraction. App-level invariant — no DB CHECK.
+    taskId: text('task_id'),
+    brainNoteId: text('brain_note_id'),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
     sizeBytes: integer('size_bytes').notNull(),
@@ -178,6 +201,7 @@ export const taskAttachments = sqliteTable(
   },
   (t) => ({
     userTask: index('idx_task_attachments_user_task').on(t.userId, t.taskId),
+    userNote: index('idx_task_attachments_user_note').on(t.userId, t.brainNoteId),
   }),
 );
 
@@ -244,8 +268,8 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
-export type ContextDoc = typeof contextDocs.$inferSelect;
-export type NewContextDoc = typeof contextDocs.$inferInsert;
+export type BrainNote = typeof brainNotes.$inferSelect;
+export type NewBrainNote = typeof brainNotes.$inferInsert;
 export type Tag = typeof tags.$inferSelect;
 export type NewTag = typeof tags.$inferInsert;
 export type TaskTag = typeof taskTags.$inferSelect;

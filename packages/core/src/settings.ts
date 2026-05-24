@@ -102,6 +102,45 @@ export async function getEffectiveTaskGuidelines(ctx: Context): Promise<string> 
 }
 
 /**
+ * Tiptap `contentJson` example for the Brain notes section of the MCP server
+ * instructions. Held outside the template literal so the triple-backtick fence
+ * doesn't need to be escaped against the surrounding template.
+ */
+const BRAIN_NOTE_EXAMPLE_FENCE = [
+  '```json',
+  '{',
+  '  "type": "doc",',
+  '  "content": [',
+  '    { "type": "heading", "attrs": { "level": 1 }, "content": [{ "type": "text", "text": "Page title" }] },',
+  '    { "type": "heading", "attrs": { "level": 2 }, "content": [{ "type": "text", "text": "Section" }] },',
+  '    { "type": "paragraph", "content": [',
+  '      { "type": "text", "text": "Plain " },',
+  '      { "type": "text", "marks": [{ "type": "bold" }], "text": "bold" },',
+  '      { "type": "text", "text": " and " },',
+  '      { "type": "text", "marks": [{ "type": "italic" }], "text": "italic" },',
+  '      { "type": "text", "text": " and a " },',
+  '      { "type": "text", "marks": [{ "type": "link", "attrs": { "href": "https://example.com" } }], "text": "link" },',
+  '      { "type": "text", "text": "." }',
+  '    ]},',
+  '    { "type": "bulletList", "content": [',
+  '      { "type": "listItem", "content": [',
+  '        { "type": "paragraph", "content": [{ "type": "text", "text": "first item" }] }',
+  '      ]},',
+  '      { "type": "listItem", "content": [',
+  '        { "type": "paragraph", "content": [{ "type": "text", "text": "second item" }] }',
+  '      ]}',
+  '    ]},',
+  '    { "type": "blockquote", "content": [',
+  '      { "type": "paragraph", "content": [{ "type": "text", "text": "callout text" }] }',
+  '    ]},',
+  '    { "type": "codeBlock", "content": [{ "type": "text", "text": "const x = 1;" }] },',
+  '    { "type": "horizontalRule" }',
+  '  ]',
+  '}',
+  '```',
+].join('\n');
+
+/**
  * Top-level operating instructions returned in the MCP `initialize` response.
  * MCP clients surface this to the agent as system-level guidance — it's the
  * one place to tell the agent, before any tool is even called, what this
@@ -143,6 +182,28 @@ When the user mentions a task by name or id, call \`get_task(id)\` first. It ret
 ## Check comments on review and resumed tasks
 
 \`comments[]\` is the persistent conversation per task — short notes from humans and agents, oldest first. **Before you act on any task in \`status="review"\` or a task that was just bounced from \`review\` back to \`doing\`, scan the tail of \`comments[]\` first.** If the latest comments mean the work needs to change, reply with \`post_comment\` summarizing what you're doing about it before continuing. Don't silently override human feedback.
+
+## Brain notes (create_note / update_note) — use contentJson, NOT markdown
+
+Brain notes are rendered by a Tiptap editor. The editor has **native** support for h1/h2/h3, bold, italic, strike, inline code, bulleted and numbered lists, blockquote, code blocks, horizontal rules, and links. **It does not parse markdown.**
+
+Pick the right field:
+
+- \`contentText\` (string) — **plain text only.** Blank lines split paragraphs, single newlines become line breaks. That is the whole grammar. Any markdown you type — \`##\` headings, \`**bold**\`, \`- bullets\`, \`| table |\` — will be stored and displayed as **literal characters**. Use this only for unformatted prose.
+- \`contentJson\` (Tiptap doc, preferred) — pass a proper doc and headings/bold/lists render as real headings/bold/lists. **This is what you want any time you'd reach for markdown.**
+
+### contentJson shape
+
+${BRAIN_NOTE_EXAMPLE_FENCE}
+
+Rules of thumb:
+- Headings: \`{type:"heading", attrs:{level: 1|2|3}, content:[…]}\`. Only levels 1, 2, 3 are configured.
+- Lists: \`bulletList\` or \`orderedList\` → \`listItem\` → \`paragraph\` (don't put text directly inside listItem).
+- Marks (\`bold\`, \`italic\`, \`strike\`, \`code\`, \`link\`) go on a text node's \`marks\` array. Combine them by listing multiple marks.
+- Tables are **not** supported — flatten to headings + paragraphs or a bulleted list.
+- Round-trip an existing note by calling \`get_note(id, format="json")\` first; you'll get the canonical \`contentJson\` back and can mutate it before \`update_note\`.
+
+If you ever feel the urge to write \`## Heading\` or \`**bold**\` into \`contentText\`, stop and build a \`contentJson\` doc instead.
 
 ---
 

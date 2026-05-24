@@ -1,11 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { Brain } from 'lucide-react';
 import {
   getSubtree,
   getTask,
   getTagsForTask,
   getTagsForTasks,
   listAssignees,
+  listBrainNotes,
   listTags,
   listTasksWithChildCount,
   type Task,
@@ -85,11 +87,14 @@ export default async function FocusPage({
 
   const hidden: ('archived' | 'snoozed' | 'backlog')[] = ['archived', 'snoozed', 'backlog'];
   const excludeStatuses = showHidden ? [] : hidden;
-  const [childrenWithCounts, taskTags, allTags, allAssignees] = await Promise.all([
+  const [childrenWithCounts, taskTags, allTags, allAssignees, scopeNotes] = await Promise.all([
     listTasksWithChildCount(ctx, { parentId: focused.id, excludeStatuses }),
     getTagsForTask(ctx, focused.id),
     listTags(ctx),
     listAssignees(ctx),
+    focused.kind === 'entity' || focused.kind === 'project'
+      ? listBrainNotes(ctx, { scopeTaskId: focused.id, limit: 1 })
+      : Promise.resolve([]),
   ]);
   const childCounts: Record<string, number> = Object.fromEntries(
     childrenWithCounts.map((c) => [c.id, c.childCount]),
@@ -147,6 +152,16 @@ export default async function FocusPage({
             </div>
           </div>
           <div className="flex items-center gap-2 self-start md:self-auto">
+            {(focused.kind === 'entity' || focused.kind === 'project') && (
+              <Link
+                href={`/brain?scope=${focused.id}`}
+                className="inline-flex items-center gap-1 rounded border border-(--color-border) px-2 py-1 text-xs text-(--color-muted) hover:border-(--color-accent) hover:text-(--color-fg)"
+                title={`Open this ${focused.kind}'s brain`}
+              >
+                <Brain size={12} />
+                Brain{scopeNotes.length > 0 ? '' : ' — empty'}
+              </Link>
+            )}
             <ShareButton taskId={focused.id} isOwner={focused.userId === ctx.userId} />
             <HiddenToggle />
             <ViewToggle />

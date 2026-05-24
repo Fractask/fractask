@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { Search, X } from 'lucide-react';
-import type { Task } from '@getshit/core';
+import { Brain, Search, X } from 'lucide-react';
+import type { BrainNoteSearchHit, Task } from '@getshit/core';
 import { searchTasksAction } from '@/app/actions';
+import { searchBrainNotesAction } from '@/app/brain-actions';
 
 const KIND_LABEL: Record<Task['kind'], string> = {
   entity: 'entity',
@@ -19,6 +20,7 @@ export function SidebarSearch() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Task[]>([]);
+  const [noteResults, setNoteResults] = useState<BrainNoteSearchHit[]>([]);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,16 +42,19 @@ export function SidebarSearch() {
     const q = query.trim();
     if (q.length === 0) {
       setResults([]);
+      setNoteResults([]);
       return;
     }
     const seq = ++seqRef.current;
     const t = setTimeout(async () => {
-      const r = await searchTasksAction(q, undefined, 8);
+      const [tasks, notes] = await Promise.all([
+        searchTasksAction(q, undefined, 6),
+        searchBrainNotesAction(q, 4),
+      ]);
       if (seq !== seqRef.current) return;
-      if (r.ok) {
-        setResults(r.value);
-        setHighlight(0);
-      }
+      if (tasks.ok) setResults(tasks.value);
+      if (notes.ok) setNoteResults(notes.value);
+      setHighlight(0);
     }, 150);
     return () => clearTimeout(t);
   }, [query]);
@@ -68,17 +73,28 @@ export function SidebarSearch() {
     setOpen(false);
     setQuery('');
     setResults([]);
+    setNoteResults([]);
     inputRef.current?.blur();
     router.push(`/${id}`);
   };
 
+  const goToNote = (id: string) => {
+    setOpen(false);
+    setQuery('');
+    setResults([]);
+    setNoteResults([]);
+    inputRef.current?.blur();
+    router.push(`/brain/${id}`);
+  };
+
+  const totalResults = results.length + noteResults.length;
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
       setOpen(false);
       inputRef.current?.blur();
       return;
     }
-    if (!open || results.length === 0) {
+    if (!open || totalResults === 0) {
       if (e.key === 'Enter') {
         e.preventDefault();
         goToAll();
@@ -87,15 +103,21 @@ export function SidebarSearch() {
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlight((h) => Math.min(results.length, h + 1));
+      setHighlight((h) => Math.min(totalResults, h + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setHighlight((h) => Math.max(0, h - 1));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      const picked = results[highlight];
-      if (picked) goToTask(picked.id);
-      else goToAll();
+      if (highlight < results.length) {
+        const picked = results[highlight];
+        if (picked) goToTask(picked.id);
+      } else if (highlight < totalResults) {
+        const picked = noteResults[highlight - results.length];
+        if (picked) goToNote(picked.id);
+      } else {
+        goToAll();
+      }
     }
   };
 
@@ -145,7 +167,7 @@ export function SidebarSearch() {
 
       {showPanel && (
         <div className="absolute z-30 left-2 right-2 top-[calc(100%+2px)] bg-(--color-bg) border border-(--color-border) rounded-md shadow-lg overflow-hidden">
-          {results.length === 0 ? (
+          {totalResults === 0 ? (
             <div className="px-3 py-2 text-xs text-(--color-muted)">No matches</div>
           ) : (
             <ul className="py-1 max-h-80 overflow-y-auto">
@@ -174,15 +196,44 @@ export function SidebarSearch() {
                   </Link>
                 </li>
               ))}
+              {noteResults.length > 0 && results.length > 0 && (
+                <li className="border-t border-(--color-border) my-1" />
+              )}
+              {noteResults.map((n, j) => {
+                const i = results.length + j;
+                return (
+                  <li key={n.id}>
+                    <Link
+                      href={`/brain/${n.id}`}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => goToNote(n.id)}
+                      onMouseEnter={() => setHighlight(i)}
+                      className={`flex items-center gap-2 px-3 py-1.5 text-sm ${
+                        highlight === i
+                          ? 'bg-(--color-surface) text-(--color-fg)'
+                          : 'text-(--color-fg) hover:bg-(--color-surface)'
+                      }`}
+                    >
+                      <span className="text-[10px] uppercase tracking-wider text-(--color-muted) w-12 shrink-0 flex items-center gap-1">
+                        <Brain size={10} /> note
+                      </span>
+                      <span className="truncate flex-1">
+                        {n.icon ? `${n.icon} ` : ''}
+                        {n.title}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
             </ul>
           )}
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={goToAll}
-            onMouseEnter={() => setHighlight(results.length)}
+            onMouseEnter={() => setHighlight(totalResults)}
             className={`w-full text-left px-3 py-1.5 text-xs border-t border-(--color-border) ${
-              highlight === results.length
+              highlight === totalResults
                 ? 'bg-(--color-surface) text-(--color-fg)'
                 : 'text-(--color-muted) hover:bg-(--color-surface) hover:text-(--color-fg)'
             }`}

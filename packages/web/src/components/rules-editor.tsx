@@ -70,6 +70,7 @@ export function RulesEditor({
         <div className="p-3 flex flex-col gap-2">
           <textarea
             ref={ref}
+            dir="auto"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
@@ -106,7 +107,7 @@ export function RulesEditor({
           </div>
         </div>
       ) : (
-        <div className="p-3 text-sm whitespace-pre-wrap min-h-[2.5rem]">
+        <div dir="auto" className="p-3 text-sm whitespace-pre-wrap min-h-[2.5rem]">
           {value.length === 0 ? (
             <span className="text-(--color-muted) italic">
               No rules yet. Click Edit to write guidance that should follow this{' '}
