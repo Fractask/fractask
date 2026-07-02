@@ -3,6 +3,7 @@ export * from './context.js';
 export * from './types.js';
 export * from './tasks.js';
 export * from './assignees.js';
+export * from './users.js';
 export * from './tags.js';
 export * from './settings.js';
 export * from './attachments.js';

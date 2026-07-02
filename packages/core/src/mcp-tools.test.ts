@@ -136,3 +136,76 @@ describe('mcp get_task tree', () => {
     assert.deepEqual(Object.keys(children[0]!).sort(), ['children', 'id', 'status', 'title']);
   });
 });
+
+describe('mcp get_user / search_users', () => {
+  const seeded = [
+    { id: nanoid(12), name: 'Alice Anderson', email: 'alice@example.com', kind: 'human' as const },
+    { id: nanoid(12), name: 'Bob Builder', email: 'bob@example.com', kind: 'guest' as const },
+    { id: nanoid(12), name: 'Scout Agent', email: null, kind: 'agent' as const },
+  ];
+
+  before(async () => {
+    const db = getDb();
+    for (const u of seeded) {
+      await db.insert(users).values({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        googleId: null,
+        image: null,
+        kind: u.kind,
+        endpoint: null,
+        createdAt: Date.now(),
+      });
+    }
+  });
+
+  it('get_user by id returns the summary', async () => {
+    const tool = findTool('get_user');
+    assert.ok(tool);
+    const out = (await tool!.handler(ctx, { id: seeded[0]!.id })) as Record<string, unknown>;
+    assert.equal(out['id'], seeded[0]!.id);
+    assert.equal(out['name'], 'Alice Anderson');
+    assert.equal(out['email'], 'alice@example.com');
+    assert.equal(out['kind'], 'human');
+  });
+
+  it('get_user by name is case-insensitive', async () => {
+    const tool = findTool('get_user');
+    const out = (await tool!.handler(ctx, { name: 'bob builder' })) as Record<string, unknown>;
+    assert.equal(out['id'], seeded[1]!.id);
+    assert.equal(out['kind'], 'guest');
+  });
+
+  it('get_user returns null for unknown id', async () => {
+    const tool = findTool('get_user');
+    assert.equal(await tool!.handler(ctx, { id: 'nope-missing' }), null);
+  });
+
+  it('get_user rejects when neither id nor name given', async () => {
+    const tool = findTool('get_user');
+    await assert.rejects(() => tool!.handler(ctx, {}) as Promise<unknown>);
+  });
+
+  it('search_users matches a name substring', async () => {
+    const tool = findTool('search_users');
+    assert.ok(tool);
+    const rows = (await tool!.handler(ctx, { query: 'ander' })) as Record<string, unknown>[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!['id'], seeded[0]!.id);
+  });
+
+  it('search_users matches an email substring', async () => {
+    const tool = findTool('search_users');
+    const rows = (await tool!.handler(ctx, { query: 'bob@example' })) as Record<string, unknown>[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!['id'], seeded[1]!.id);
+  });
+
+  it('search_users with no query lists everyone', async () => {
+    const tool = findTool('search_users');
+    const rows = (await tool!.handler(ctx, {})) as Record<string, unknown>[];
+    // 3 seeded here + the mcp-test user from the top-level before().
+    assert.ok(rows.length >= 4);
+  });
+});
