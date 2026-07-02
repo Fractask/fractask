@@ -48,9 +48,19 @@ export function TaskList({
   const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
   const [, start] = useTransition();
 
-  // Re-sync if the server sends a new task list (e.g. after a create/delete).
-  if (tasks !== order && tasks.map((t) => t.id).join(',') !== order.map((t) => t.id).join(',')) {
-    setOrder(tasks);
+  // Re-sync if the server sends a new task list. This covers add/delete/reorder
+  // (the id set changes) AND in-place field changes like status (same ids, but a
+  // task's updatedAt bumps). Comparing updatedAt by id — rather than by position —
+  // keeps an in-progress drag's optimistic order intact, since a drag doesn't bump
+  // updatedAt.
+  if (tasks !== order) {
+    const byId = new Map(order.map((t) => [t.id, t]));
+    const idsChanged =
+      tasks.map((t) => t.id).join(',') !== order.map((t) => t.id).join(',');
+    const contentChanged = tasks.some((t) => byId.get(t.id)?.updatedAt !== t.updatedAt);
+    if (idsChanged || contentChanged) {
+      setOrder(tasks);
+    }
   }
 
   const reorderable = reorder !== undefined;
