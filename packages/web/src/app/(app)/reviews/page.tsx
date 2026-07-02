@@ -29,7 +29,12 @@ export default async function ReviewsPage() {
             Nothing needs your attention right now.
           </p>
         ) : (
-          <TaskList tasks={tasks} childCounts={{}} tagsByTask={tagsByTask} />
+          <TaskList
+            tasks={tasks}
+            childCounts={{}}
+            tagsByTask={tagsByTask}
+            showDate="updatedAt"
+          />
         )}
       </section>
     </div>
