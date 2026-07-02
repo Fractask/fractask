@@ -36,6 +36,7 @@ import {
   searchBrainNotes,
   updateBrainNote,
 } from './brain.js';
+import { getUserById, getUserByName, searchUsers } from './users.js';
 
 /**
  * One tool, defined once and consumed by both transports:
@@ -233,6 +234,20 @@ const searchNotesZod = z.object({
   query: z.string().min(1),
   scopeTaskId: z.union([z.string(), z.null()]).optional(),
   limit: z.number().int().positive().max(100).optional(),
+});
+
+const getUserZod = z
+  .object({
+    id: z.string().optional(),
+    name: z.string().optional(),
+  })
+  .refine(
+    (v) => (v.id ? 1 : 0) + (v.name ? 1 : 0) === 1,
+    'Exactly one of id or name is required',
+  );
+const searchUsersZod = z.object({
+  query: z.string().optional(),
+  limit: z.number().int().positive().max(200).optional(),
 });
 
 function STR_OR_NULL_DESCRIBED(description: string) {
@@ -896,6 +911,55 @@ export const TOOLS: ToolDef[] = [
       const a = moveTaskZod.parse(raw);
       const target = a.newParentId === 'root' ? null : a.newParentId;
       return moveTask(ctx, a.id, target, a.position);
+    },
+  },
+  {
+    name: 'get_user',
+    description: [
+      'Fetch a single user (a person or agent) by `id` OR by `name` — pass exactly one.',
+      'Name match is case-insensitive and exact; if several users share a name the oldest is returned, so prefer `search_users` to disambiguate.',
+      'Use this to resolve who an assigneeId/reviewerId refers to, or to turn a human-supplied name into an id for create_task/update_task.',
+      'Returns `{ id, name, email, kind, image, createdAt }` where kind is "human" (signed in) | "agent" | "guest". Returns null if not found.',
+    ].join(' '),
+    inputSchemaZod: getUserZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'User id (exact)' },
+        name: { type: 'string', description: 'Exact name, case-insensitive' },
+      },
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = getUserZod.parse(raw);
+      return a.id !== undefined
+        ? getUserById(ctx, a.id)
+        : getUserByName(ctx, a.name as string);
+    },
+  },
+  {
+    name: 'search_users',
+    description: [
+      'Search users (people and agents) by a substring of their name or email (case-insensitive).',
+      'Omit `query` to list everyone. Everyone in the shared workspace is visible.',
+      'Use this to find the id for an assigneeId/reviewerId — e.g. search "alex", then pass the matching id to create_task/update_task.',
+      'Returns `[{ id, name, email, kind, image, createdAt }]` ordered by name; kind is "human" | "agent" | "guest".',
+    ].join(' '),
+    inputSchemaZod: searchUsersZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Substring of name or email; omit to list all' },
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
+      },
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = searchUsersZod.parse(raw);
+      return searchUsers(ctx, {
+        ...(a.query !== undefined ? { query: a.query } : {}),
+        ...(a.limit !== undefined ? { limit: a.limit } : {}),
+      });
     },
   },
 ];
