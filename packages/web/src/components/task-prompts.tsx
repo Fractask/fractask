@@ -73,7 +73,7 @@ function SettledSummary({ prompt }: { prompt: AgentPrompt }) {
     summary = `Picked: ${labels}`;
   }
   return (
-    <span>
+    <span dir="auto">
       <span className="text-(--color-muted)">[{fmtTime(ts)}]</span>{' '}
       <span className="text-(--color-fg)">{prompt.prompt}</span>{' '}
       <span className="text-(--color-muted)">— {summary}</span>
@@ -101,7 +101,7 @@ function PromptCard({
   return (
     <div className="rounded-md border border-(--color-border) bg-(--color-surface) px-4 py-3">
       <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="text-sm font-medium text-(--color-fg) whitespace-pre-wrap">
+        <div dir="auto" className="text-sm font-medium text-(--color-fg) whitespace-pre-wrap">
           {prompt.prompt}
         </div>
         <button
@@ -148,6 +148,7 @@ function TextPromptBody({ prompt, setError }: BodyProps) {
   return (
     <div className="flex flex-col gap-2">
       <textarea
+        dir="auto"
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={3}
@@ -184,6 +185,7 @@ function ApprovalPromptBody({ prompt, setError }: BodyProps) {
   return (
     <div className="flex flex-col gap-2">
       <input
+        dir="auto"
         value={comment}
         onChange={(e) => setComment(e.target.value)}
         placeholder="Optional comment"
@@ -238,19 +240,22 @@ function ChoicePromptBody({ prompt, setError }: BodyProps) {
       <ul className="flex flex-col gap-1">
         {opts.map((o) => (
           <li key={o.id}>
-            <label className="flex items-start gap-2 cursor-pointer rounded px-2 py-1 hover:bg-(--color-bg)">
+            <label
+              dir="auto"
+              className="flex items-start gap-2 cursor-pointer rounded px-2 py-1 hover:bg-(--color-bg)"
+            >
               <input
                 type={prompt.multiple ? 'checkbox' : 'radio'}
                 name={`p-${prompt.id}`}
                 checked={selected.has(o.id)}
                 onChange={() => toggle(o.id)}
                 disabled={pending}
-                className="mt-0.5"
+                className="mt-1 shrink-0"
               />
               <span className="flex flex-col">
-                <span className="text-sm">{o.label}</span>
+                <span dir="auto" className="text-sm">{o.label}</span>
                 {o.description && (
-                  <span className="text-xs text-(--color-muted)">{o.description}</span>
+                  <span dir="auto" className="text-xs text-(--color-muted)">{o.description}</span>
                 )}
               </span>
             </label>
@@ -309,8 +314,8 @@ function PickImagePromptBody({
             ) : (
               <div className="h-24 w-full rounded bg-(--color-bg)" />
             )}
-            <span className="text-xs">{o.label}</span>
-            {filename && <span className="text-[10px] text-(--color-muted)">{filename}</span>}
+            <span dir="auto" className="text-xs">{o.label}</span>
+            {filename && <span dir="auto" className="text-[10px] text-(--color-muted)">{filename}</span>}
           </button>
         );
       })}
