@@ -3,6 +3,11 @@
 import { useState, useTransition } from 'react';
 import type { AgentPrompt, PromptOption, TaskAttachment } from '@getshit/core';
 import { answerPromptAction, cancelPromptAction } from '@/app/actions';
+import { textDirection } from '@/lib/text-direction';
+
+function optionDir(o: PromptOption): 'rtl' | 'ltr' {
+  return textDirection(`${o.label} ${o.description ?? ''}`);
+}
 
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -73,7 +78,7 @@ function SettledSummary({ prompt }: { prompt: AgentPrompt }) {
     summary = `Picked: ${labels}`;
   }
   return (
-    <span dir="auto">
+    <span dir={textDirection(prompt.prompt)}>
       <span className="text-(--color-muted)">[{fmtTime(ts)}]</span>{' '}
       <span className="text-(--color-fg)">{prompt.prompt}</span>{' '}
       <span className="text-(--color-muted)">— {summary}</span>
@@ -99,9 +104,12 @@ function PromptCard({
   };
 
   return (
-    <div className="rounded-md border border-(--color-border) bg-(--color-surface) px-4 py-3">
+    <div
+      dir={textDirection(prompt.prompt)}
+      className="rounded-md border border-(--color-border) bg-(--color-surface) px-4 py-3"
+    >
       <div className="mb-2 flex items-start justify-between gap-3">
-        <div dir="auto" className="text-sm font-medium text-(--color-fg) whitespace-pre-wrap">
+        <div className="text-sm font-medium text-(--color-fg) whitespace-pre-wrap">
           {prompt.prompt}
         </div>
         <button
@@ -241,7 +249,7 @@ function ChoicePromptBody({ prompt, setError }: BodyProps) {
         {opts.map((o) => (
           <li key={o.id}>
             <label
-              dir="auto"
+              dir={optionDir(o)}
               className="flex items-start gap-2 cursor-pointer rounded px-2 py-1 hover:bg-(--color-bg)"
             >
               <input
@@ -253,9 +261,9 @@ function ChoicePromptBody({ prompt, setError }: BodyProps) {
                 className="mt-1 shrink-0"
               />
               <span className="flex flex-col">
-                <span dir="auto" className="text-sm">{o.label}</span>
+                <span className="text-sm">{o.label}</span>
                 {o.description && (
-                  <span dir="auto" className="text-xs text-(--color-muted)">{o.description}</span>
+                  <span className="text-xs text-(--color-muted)">{o.description}</span>
                 )}
               </span>
             </label>
@@ -314,7 +322,7 @@ function PickImagePromptBody({
             ) : (
               <div className="h-24 w-full rounded bg-(--color-bg)" />
             )}
-            <span dir="auto" className="text-xs">{o.label}</span>
+            <span dir={optionDir(o)} className="text-xs">{o.label}</span>
             {filename && <span dir="auto" className="text-[10px] text-(--color-muted)">{filename}</span>}
           </button>
         );
