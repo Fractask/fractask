@@ -1,7 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
-import { List, Network } from 'lucide-react';
+import { CalendarRange, List, Network } from 'lucide-react';
 
 export function ViewToggle() {
   const router = useRouter();
@@ -33,6 +34,14 @@ export function ViewToggle() {
       >
         <Network size={14} /> Tree
       </button>
+      <Link
+        // On a task/project focus page the path is `/<id>` — scope the
+        // calendar to that subtree. On the root list, show everything.
+        href={pathname === '/' ? '/calendar' : `/calendar?scope=${pathname.slice(1)}`}
+        className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-(--color-muted) hover:text-(--color-fg)"
+      >
+        <CalendarRange size={14} /> Calendar
+      </Link>
     </div>
   );
 }
