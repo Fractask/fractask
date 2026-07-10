@@ -8,6 +8,7 @@ import {
   ArrowDownToLine,
   Building2,
   CalendarDays,
+  CalendarRange,
   ChevronRight,
   Eye,
   HelpCircle,
@@ -97,6 +98,7 @@ type StaticItem = {
   icon:
     | 'inbox'
     | 'today'
+    | 'calendar'
     | 'all'
     | 'goals'
     | 'tags'
@@ -117,6 +119,7 @@ type StaticItem = {
 const ICONS = {
   inbox: Inbox,
   today: CalendarDays,
+  calendar: CalendarRange,
   all: ListTodo,
   goals: Target,
   tags: Tag,

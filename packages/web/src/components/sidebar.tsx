@@ -107,6 +107,7 @@ export async function Sidebar() {
         <div className="flex flex-col gap-0.5">
           <SidebarStaticItem item={{ href: '/inbox', label: 'Inbox', icon: 'inbox', count: inbox.length }} />
           <SidebarStaticItem item={{ href: '/today', label: 'Today', icon: 'today', count: dueToday.length }} />
+          <SidebarStaticItem item={{ href: '/calendar', label: 'Calendar', icon: 'calendar' }} />
           <SidebarStaticItem
             item={{
               href: '/reviews',
