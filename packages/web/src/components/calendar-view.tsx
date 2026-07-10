@@ -30,9 +30,11 @@ function monthCells(year: number, month: number): Date[] {
 export function CalendarView({
   tasks,
   media,
+  scope,
 }: {
   tasks: Task[];
   media: Record<string, CalendarMedia>;
+  scope: { id: string; title: string } | null;
 }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -63,7 +65,24 @@ export function CalendarView({
   return (
     <div className="flex flex-col gap-3">
       <header className="flex items-center justify-between">
-        <h1 className="text-sm font-medium">{monthLabel}</h1>
+        <div className="flex items-baseline gap-2 min-w-0">
+          <h1 className="text-sm font-medium whitespace-nowrap">{monthLabel}</h1>
+          {scope && (
+            <span className="flex items-baseline gap-1.5 min-w-0 text-xs text-(--color-muted)">
+              ·
+              <Link
+                href={`/${scope.id}`}
+                dir={textDirection(scope.title)}
+                className="truncate hover:text-(--color-fg)"
+              >
+                {scope.title}
+              </Link>
+              <Link href="/calendar" className="whitespace-nowrap hover:text-(--color-fg)">
+                (show all)
+              </Link>
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
