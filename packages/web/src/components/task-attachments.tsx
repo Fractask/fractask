@@ -19,6 +19,10 @@ function isImage(mime: string): boolean {
   return mime.startsWith('image/');
 }
 
+function isVideo(mime: string): boolean {
+  return mime.startsWith('video/');
+}
+
 function isPdf(mime: string): boolean {
   return mime === 'application/pdf';
 }
@@ -77,7 +81,8 @@ export function TaskAttachments({
   };
 
   const images = attachments.filter((a) => isImage(a.mimeType));
-  const others = attachments.filter((a) => !isImage(a.mimeType));
+  const videos = attachments.filter((a) => isVideo(a.mimeType));
+  const others = attachments.filter((a) => !isImage(a.mimeType) && !isVideo(a.mimeType));
 
   return (
     <section className="mb-6 flex flex-col gap-2">
@@ -101,6 +106,46 @@ export function TaskAttachments({
                 className="h-16 w-16 rounded border border-(--color-border) object-cover"
               />
             </a>
+          ))}
+        </div>
+      )}
+
+      {videos.length > 0 && (
+        <div className="flex flex-wrap gap-3 px-2">
+          {videos.map((a) => (
+            <figure
+              key={a.id}
+              className="flex flex-col gap-1 rounded-md border border-(--color-border) bg-(--color-surface) p-1"
+            >
+              <video
+                src={`/api/files/${a.id}`}
+                controls
+                preload="metadata"
+                playsInline
+                className="max-h-72 w-full max-w-sm rounded bg-black object-contain"
+              />
+              <figcaption className="flex items-center gap-2 px-1 text-xs text-(--color-muted)">
+                <a
+                  href={`/api/files/${a.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex-1 truncate hover:text-(--color-accent)"
+                  title={a.filename}
+                >
+                  {a.filename}
+                </a>
+                <span>{fmtSize(a.sizeBytes)}</span>
+                <button
+                  type="button"
+                  onClick={() => remove(a.id)}
+                  disabled={pending}
+                  className="text-(--color-muted) hover:text-red-400 disabled:opacity-50"
+                  aria-label="Delete video"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </figcaption>
+            </figure>
           ))}
         </div>
       )}
