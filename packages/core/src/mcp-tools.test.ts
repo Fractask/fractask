@@ -209,3 +209,48 @@ describe('mcp get_user / search_users', () => {
     assert.ok(rows.length >= 4);
   });
 });
+
+describe('mcp create_task / update_task dueAt', () => {
+  it('create_task accepts an ISO date string and stores epoch ms', async () => {
+    const tool = findTool('create_task');
+    const out = (await tool!.handler(ctx, {
+      title: 'post — launch day',
+      dueAt: '2026-07-15',
+    })) as Record<string, unknown>;
+    assert.equal(out['dueAt'], Date.parse('2026-07-15'));
+  });
+
+  it('create_task accepts epoch ms directly', async () => {
+    const tool = findTool('create_task');
+    const ms = Date.parse('2026-08-01T00:00:00Z');
+    const out = (await tool!.handler(ctx, { title: 'post — august', dueAt: ms })) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(out['dueAt'], ms);
+  });
+
+  it('update_task sets and clears dueAt', async () => {
+    const create = findTool('create_task');
+    const update = findTool('update_task');
+    const task = (await create!.handler(ctx, { title: 'post — TBD' })) as Record<string, unknown>;
+    const id = task['id'] as string;
+
+    const scheduled = (await update!.handler(ctx, { id, dueAt: '2026-09-09' })) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(scheduled['dueAt'], Date.parse('2026-09-09'));
+
+    const cleared = (await update!.handler(ctx, { id, dueAt: null })) as Record<string, unknown>;
+    assert.equal(cleared['dueAt'], null);
+  });
+
+  it('rejects a garbage date string', async () => {
+    const tool = findTool('create_task');
+    await assert.rejects(
+      () => tool!.handler(ctx, { title: 'bad', dueAt: 'not-a-date' }) as Promise<unknown>,
+      /Invalid dueAt/,
+    );
+  });
+});
