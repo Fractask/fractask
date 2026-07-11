@@ -12,6 +12,7 @@ import type { TaskTree } from './tasks.js';
 import type { Task } from './schema.js';
 import {
   addAttachmentFromUrl,
+  createAttachment,
   deleteAttachment,
   listAttachments,
 } from './attachments.js';
@@ -194,6 +195,33 @@ const attachFromUrlZod = z
     (v) => (v.taskId ? 1 : 0) + (v.noteId ? 1 : 0) === 1,
     'Exactly one of taskId or noteId is required',
   );
+
+const attachFileZod = z
+  .object({
+    taskId: z.string().optional(),
+    noteId: z.string().optional(),
+    filename: z.string().min(1).max(255),
+    mimeType: z.string().min(1).max(200),
+    dataBase64: z.string().min(1),
+  })
+  .refine(
+    (v) => (v.taskId ? 1 : 0) + (v.noteId ? 1 : 0) === 1,
+    'Exactly one of taskId or noteId is required',
+  );
+
+// Accept a bare base64 string or a full data: URL ("data:image/png;base64,…").
+function decodeBase64(input: string): Uint8Array<ArrayBuffer> {
+  const comma = input.indexOf(',');
+  const b64 = input.startsWith('data:') && comma !== -1 ? input.slice(comma + 1) : input;
+  const buf = Buffer.from(b64, 'base64');
+  if (buf.byteLength === 0) {
+    throw new Error('dataBase64 decoded to zero bytes — expected base64-encoded file contents');
+  }
+  // Copy into a fresh ArrayBuffer-backed view (Buffer is typed ArrayBufferLike).
+  const out = new Uint8Array(buf.byteLength);
+  out.set(buf);
+  return out;
+}
 
 const listAttachmentsZod = z.object({ taskId: z.string() });
 const deleteAttachmentZod = z.object({ id: z.string() });
@@ -493,6 +521,42 @@ export const TOOLS: ToolDef[] = [
         a.url,
         'agent',
       );
+    },
+  },
+  {
+    name: 'attach_file',
+    description: [
+      'Attach a file (image, video, PDF, document) to a task or brain note by uploading its bytes directly as base64 — no public URL needed.',
+      'Pass exactly one of taskId or noteId, plus filename, mimeType (e.g. "image/png", "video/mp4"), and dataBase64 (base64 of the raw bytes; a full "data:...;base64,..." URL is also accepted).',
+      'Prefer attach_file_from_url for large files (esp. video): on a hosted/serverless MCP endpoint the request body is capped by the platform (~4.5MB on Vercel), while URL-fetch is bounded only by GETSHIT_MAX_UPLOAD_MB.',
+      'Source is auto-tagged "agent". After upload the file is at /api/files/<id> and appears in get_task(taskId).attachments or get_note(noteId).attachments; the first image (else video) becomes the calendar thumbnail.',
+    ].join(' '),
+    inputSchemaZod: attachFileZod,
+    inputSchemaJson: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Task to attach to (exactly one of taskId/noteId)' },
+        noteId: { type: 'string', description: 'Brain note to attach to (exactly one of taskId/noteId)' },
+        filename: { type: 'string', description: 'File name, e.g. "reel.mp4"' },
+        mimeType: { type: 'string', description: 'MIME type, e.g. "image/png" or "video/mp4"' },
+        dataBase64: {
+          type: 'string',
+          description: 'Base64-encoded file bytes (a full "data:...;base64,..." URL is also accepted)',
+        },
+      },
+      required: ['filename', 'mimeType', 'dataBase64'],
+      additionalProperties: false,
+    },
+    handler: async (ctx, raw) => {
+      const a = attachFileZod.parse(raw);
+      return createAttachment(ctx, {
+        ...(a.taskId ? { taskId: a.taskId } : {}),
+        ...(a.noteId ? { brainNoteId: a.noteId } : {}),
+        filename: a.filename,
+        mimeType: a.mimeType,
+        body: decodeBase64(a.dataBase64),
+        source: 'agent',
+      });
     },
   },
   {

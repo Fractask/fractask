@@ -254,3 +254,46 @@ describe('mcp create_task / update_task dueAt', () => {
     );
   });
 });
+
+describe('mcp attach_file (base64)', () => {
+  it('attaches raw base64 bytes to a task', async () => {
+    const task = await createTask(ctx, { title: 'post — with image' });
+    const tool = findTool('attach_file');
+    const bytes = 'hello world';
+    const out = (await tool!.handler(ctx, {
+      taskId: task.id,
+      filename: 'greeting.txt',
+      mimeType: 'text/plain',
+      dataBase64: Buffer.from(bytes).toString('base64'),
+    })) as Record<string, unknown>;
+    assert.equal(out['mimeType'], 'text/plain');
+    assert.equal(out['filename'], 'greeting.txt');
+    assert.equal(out['sizeBytes'], bytes.length);
+  });
+
+  it('accepts a full data: URL', async () => {
+    const task = await createTask(ctx, { title: 'post — data url' });
+    const tool = findTool('attach_file');
+    const b64 = Buffer.from([1, 2, 3, 4]).toString('base64');
+    const out = (await tool!.handler(ctx, {
+      taskId: task.id,
+      filename: 'blob.bin',
+      mimeType: 'application/octet-stream',
+      dataBase64: `data:application/octet-stream;base64,${b64}`,
+    })) as Record<string, unknown>;
+    assert.equal(out['sizeBytes'], 4);
+  });
+
+  it('requires exactly one of taskId/noteId', async () => {
+    const tool = findTool('attach_file');
+    await assert.rejects(
+      () =>
+        tool!.handler(ctx, {
+          filename: 'x.txt',
+          mimeType: 'text/plain',
+          dataBase64: Buffer.from('x').toString('base64'),
+        }) as Promise<unknown>,
+      /Exactly one of taskId or noteId/,
+    );
+  });
+});
