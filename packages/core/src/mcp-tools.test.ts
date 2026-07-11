@@ -9,7 +9,7 @@ import { nanoid } from 'nanoid';
 import { closeDb, getDb } from './db/client.js';
 import { users } from './schema.js';
 import { createTask, updateTask } from './tasks.js';
-import { findTool } from './mcp-tools.js';
+import { TOOLS, findTool, zodInputShape } from './mcp-tools.js';
 import type { Context } from './context.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -295,5 +295,37 @@ describe('mcp attach_file (base64)', () => {
         }) as Promise<unknown>,
       /Exactly one of taskId or noteId/,
     );
+  });
+});
+
+describe('mcp tool schema advertising', () => {
+  // The stdio transport advertises zodInputShape(); the HTTP transport
+  // advertises inputSchemaJson. If they disagree, one transport silently drops
+  // arguments — which is exactly how attach_file(_from_url)/get_user broke
+  // (refine() wraps the object in ZodEffects → empty shape). Lock the invariant
+  // that every tool exposes the SAME property names both ways.
+  it('every tool advertises the same properties via Zod shape and JSON schema', () => {
+    for (const tool of TOOLS) {
+      const zodKeys = Object.keys(zodInputShape(tool.inputSchemaZod)).sort();
+      const json = tool.inputSchemaJson as { properties?: Record<string, unknown> };
+      const jsonKeys = Object.keys(json.properties ?? {}).sort();
+      assert.deepEqual(
+        zodKeys,
+        jsonKeys,
+        `tool "${tool.name}": Zod shape [${zodKeys}] != JSON properties [${jsonKeys}]`,
+      );
+      assert.ok(zodKeys.length > 0, `tool "${tool.name}" advertises no properties`);
+    }
+  });
+
+  it('refine()-wrapped tools still expose their fields (regression)', () => {
+    // These three use .refine() (ZodEffects) and previously advertised {}.
+    for (const name of ['attach_file', 'attach_file_from_url', 'get_user']) {
+      const tool = findTool(name)!;
+      const keys = Object.keys(zodInputShape(tool.inputSchemaZod));
+      assert.ok(keys.length > 0, `${name} must expose its input fields`);
+    }
+    assert.ok(Object.keys(zodInputShape(findTool('attach_file_from_url')!.inputSchemaZod)).includes('url'));
+    assert.ok(Object.keys(zodInputShape(findTool('attach_file')!.inputSchemaZod)).includes('dataBase64'));
   });
 });

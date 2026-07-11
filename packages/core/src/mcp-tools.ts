@@ -1060,3 +1060,34 @@ export const TOOLS: ToolDef[] = [
 export function findTool(name: string): ToolDef | null {
   return TOOLS.find((t) => t.name === name) ?? null;
 }
+
+/**
+ * Reduce a tool's input Zod schema to its object *shape* (the map of field name
+ * → Zod type) for transports that advertise a raw shape (the stdio MCP SDK).
+ *
+ * `.refine()` wraps a ZodObject in a ZodEffects — and `.default()`/`.optional()`
+ * wrap it too — so a naive `.shape` access returns undefined and the tool ends
+ * up advertising an EMPTY schema, which makes clients silently drop every
+ * argument (the bug that broke attach_file / attach_file_from_url / get_user).
+ * Peel the known wrappers until we reach the ZodObject; return {} if there is
+ * none. Cross-field refinements are preserved regardless because handlers
+ * re-parse with the full schema at call time.
+ */
+export function zodInputShape(schema: unknown): Record<string, unknown> {
+  let cur = schema as {
+    _def?: { typeName?: string; schema?: unknown; innerType?: unknown };
+    shape?: Record<string, unknown>;
+  };
+  for (let i = 0; i < 10 && cur?._def; i++) {
+    const tn = cur._def.typeName;
+    if (tn === 'ZodObject') return cur.shape ?? {};
+    if (tn === 'ZodEffects') {
+      cur = cur._def.schema as typeof cur;
+    } else if (tn === 'ZodDefault' || tn === 'ZodOptional' || tn === 'ZodNullable') {
+      cur = cur._def.innerType as typeof cur;
+    } else {
+      break;
+    }
+  }
+  return {};
+}

@@ -10,6 +10,7 @@ import {
   getEffectiveTaskGuidelines,
   getServerInstructions,
   runMigrations,
+  zodInputShape,
 } from '@getshit/core';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -100,11 +101,14 @@ for (const tool of TOOLS) {
     tool.name === 'create_task' ? tool.description + guidelinesBlock : tool.description;
 
   // The MCP SDK accepts a Zod *raw shape* (object of zod schemas), not a full
-  // ZodObject. Our shared defs hold a ZodObject, so unwrap to the shape here.
-  const inputSchema =
-    tool.inputSchemaZod._def.typeName === 'ZodObject'
-      ? ((tool.inputSchemaZod as unknown as { shape: ZodRawShape }).shape)
-      : ({} as ZodRawShape);
+  // ZodObject. Our shared defs hold a ZodObject — but some are wrapped in
+  // ZodEffects by `.refine()` (cross-field checks like "exactly one of
+  // taskId/noteId"). Unwrap those wrappers to reach the object shape; without
+  // this the tool advertises an EMPTY schema and clients drop every argument
+  // (this is why attach_file / attach_file_from_url / get_user silently lost
+  // their params). The refine still runs — the handler re-parses with the full
+  // schema — so no validation is lost by advertising the base shape.
+  const inputSchema = zodInputShape(tool.inputSchemaZod) as ZodRawShape;
 
   server.registerTool(tool.name, { description, inputSchema }, async (args: unknown) => {
     try {
