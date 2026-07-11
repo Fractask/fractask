@@ -57,6 +57,7 @@ export function CalendarView({
 
   const cells = monthCells(year, month);
   const todayKey = dayKey(now);
+  const pendingCount = tasks.filter((t) => t.status === 'review').length;
   const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, {
     month: 'long',
     year: 'numeric',
@@ -113,6 +114,13 @@ export function CalendarView({
         </div>
       </header>
 
+      {pendingCount > 0 && (
+        <div className="flex items-center gap-1.5 text-xs text-(--color-muted)">
+          <span className="h-2 w-2 rounded-full bg-amber-500" aria-hidden />
+          {pendingCount} waiting for your approval
+        </div>
+      )}
+
       <div className="grid grid-cols-7 text-center text-[10px] uppercase tracking-wider text-(--color-muted)">
         {WEEKDAYS.map((w) => (
           <div key={w} className="py-1">
@@ -156,13 +164,25 @@ export function CalendarView({
 
 function CalendarChip({ task, media }: { task: Task; media: CalendarMedia | undefined }) {
   const done = task.status === 'done';
+  // A task sitting in `review` is waiting for the human to approve/reject
+  // (e.g. a bot-drafted post). Flag it amber so pending sign-offs pop.
+  const pending = task.status === 'review';
   return (
     <Link
       href={`/${task.id}`}
-      className={`block rounded border border-(--color-border) bg-(--color-surface) hover:border-(--color-accent) overflow-hidden ${
-        done ? 'opacity-60' : ''
-      }`}
+      title={pending ? `${task.title} — waiting for approval` : task.title}
+      className={`relative block rounded border bg-(--color-surface) overflow-hidden ${
+        pending
+          ? 'border-amber-500 ring-1 ring-amber-500/60 hover:border-amber-400'
+          : 'border-(--color-border) hover:border-(--color-accent)'
+      } ${done ? 'opacity-60' : ''}`}
     >
+      {pending && (
+        <span
+          className="absolute right-0.5 top-0.5 z-10 h-2 w-2 rounded-full bg-amber-500 ring-1 ring-(--color-bg)"
+          aria-hidden
+        />
+      )}
       {media &&
         (media.kind === 'image' ? (
           // eslint-disable-next-line @next/next/no-img-element

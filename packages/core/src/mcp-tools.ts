@@ -132,6 +132,26 @@ const getTaskZod = z.object({
   fields: z.array(z.enum(taskFieldEnum)).optional(),
 });
 
+// Due date can arrive as epoch ms (number) or an ISO date string like
+// "2026-07-15" — bots naturally produce the latter. Coerce to epoch ms; null
+// clears the date.
+const dueAtZod = z.union([z.number().int(), z.string().min(1), z.null()]).optional();
+
+function coerceDueAt(v: number | string | null | undefined): number | null | undefined {
+  if (v === undefined || v === null || typeof v === 'number') return v;
+  const ms = Date.parse(v);
+  if (Number.isNaN(ms)) {
+    throw new Error(`Invalid dueAt "${v}" — pass epoch milliseconds or an ISO date like "2026-07-15"`);
+  }
+  return ms;
+}
+
+const DUE_AT_PROP = {
+  description:
+    'Due / scheduled date — epoch milliseconds or an ISO date string like "2026-07-15" (null clears it). This is the day the task lands on the calendar view.',
+  anyOf: [{ type: 'number' }, { type: 'string' }, { type: 'null' }],
+} as const;
+
 const createTaskZod = z.object({
   title: z.string().min(1),
   parentId: z.union([z.string(), z.null()]).optional(),
@@ -141,6 +161,7 @@ const createTaskZod = z.object({
   kind: z.enum(taskKindEnum).optional(),
   assigneeId: z.union([z.string(), z.null()]).optional(),
   reviewerId: z.union([z.string(), z.null()]).optional(),
+  dueAt: dueAtZod,
 });
 
 const updateTaskZod = z.object({
@@ -152,6 +173,7 @@ const updateTaskZod = z.object({
   kind: z.enum(taskKindEnum).optional(),
   assigneeId: z.union([z.string(), z.null()]).optional(),
   reviewerId: z.union([z.string(), z.null()]).optional(),
+  dueAt: dueAtZod,
 });
 
 const deleteTaskZod = z.object({ id: z.string() });
@@ -364,6 +386,7 @@ export const TOOLS: ToolDef[] = [
         kind: KIND_PROP,
         assigneeId: { ...STR_OR_NULL, description: 'Assignee id (the doer)' },
         reviewerId: { ...STR_OR_NULL, description: 'Reviewer id (approver when status="review")' },
+        dueAt: DUE_AT_PROP,
       },
       required: ['title'],
       additionalProperties: false,
@@ -379,6 +402,7 @@ export const TOOLS: ToolDef[] = [
         ...(a.kind !== undefined ? { kind: a.kind } : {}),
         ...(a.assigneeId !== undefined ? { assigneeId: a.assigneeId } : {}),
         ...(a.reviewerId !== undefined ? { reviewerId: a.reviewerId } : {}),
+        ...(a.dueAt !== undefined ? { dueAt: coerceDueAt(a.dueAt) } : {}),
         source: 'agent',
       });
     },
@@ -402,6 +426,7 @@ export const TOOLS: ToolDef[] = [
         kind: KIND_PROP,
         assigneeId: STR_OR_NULL,
         reviewerId: STR_OR_NULL,
+        dueAt: DUE_AT_PROP,
       },
       required: ['id'],
       additionalProperties: false,
@@ -416,6 +441,7 @@ export const TOOLS: ToolDef[] = [
         ...(a.kind !== undefined ? { kind: a.kind } : {}),
         ...(a.assigneeId !== undefined ? { assigneeId: a.assigneeId } : {}),
         ...(a.reviewerId !== undefined ? { reviewerId: a.reviewerId } : {}),
+        ...(a.dueAt !== undefined ? { dueAt: coerceDueAt(a.dueAt) } : {}),
       });
     },
   },

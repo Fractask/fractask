@@ -7,6 +7,7 @@ import {
 } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 import { CalendarView, type CalendarMedia } from '@/components/calendar-view';
+import { ViewToggle } from '@/components/view-toggle';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,6 +57,9 @@ export default async function CalendarPage({
 
   return (
     <div className="px-6 py-4 max-w-5xl mx-auto">
+      <div className="mb-3 flex justify-end">
+        <ViewToggle />
+      </div>
       <CalendarView
         tasks={tasks}
         media={media}
