@@ -1,42 +1,104 @@
-import { ensureSelfAssignee, getTagsForTasks, listTasks, type Task } from '@getshit/core';
+import {
+  ensureSelfAssignee,
+  getTagsForTasks,
+  listAssignees,
+  listAttachmentsForTasks,
+  listPromptsForTasks,
+  listTasks,
+  type Task,
+} from '@getshit/core';
+import Link from 'next/link';
 import { getRequestContext } from '@/lib/auth';
 import { TaskList } from '@/components/task-list';
+import { ReviewCards, type ReviewItem } from '@/components/review-cards';
+import { ReviewOverview, type OverviewPerson } from '@/components/review-overview';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ReviewsPage() {
+type View = 'cards' | 'list' | 'overview';
+
+export default async function ReviewsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
+  const { view: rawView } = await searchParams;
+  const view: View = rawView === 'list' ? 'list' : rawView === 'overview' ? 'overview' : 'cards';
+
   const ctx = await getRequestContext();
   // Reviewer = me. Self-assignee row is the canonical "me" id, generated lazily
   // on first list of /assignees. Ensure it exists so this page works zero-config.
   const me = await ensureSelfAssignee(ctx);
-  const tasks: Task[] = await listTasks(ctx, { reviewerId: me.id, status: 'review' });
-  const tagsByTask = await getTagsForTasks(ctx, tasks.map((t) => t.id));
+  // Cards/List = "needs your input" = tasks in review with me as reviewer.
+  // Overview = the broader "who's holding what" board: every active task
+  // (open/doing/review) grouped by assignee, regardless of reviewer.
+  const tasks: Task[] =
+    view === 'overview'
+      ? await listTasks(ctx, { excludeStatuses: ['done', 'archived', 'snoozed', 'backlog'] })
+      : await listTasks(ctx, { reviewerId: me.id, status: 'review' });
+  const ids = tasks.map((t) => t.id);
+
+  const [tagsByTask, promptsByTask, attByTask, assignees] = await Promise.all([
+    getTagsForTasks(ctx, ids),
+    listPromptsForTasks(ctx, ids),
+    listAttachmentsForTasks(ctx, ids),
+    listAssignees(ctx),
+  ]);
+
+  const items: ReviewItem[] = tasks.map((task) => ({
+    task,
+    prompts: (promptsByTask.get(task.id) ?? []).filter((p) => p.status === 'pending'),
+    attachments: attByTask.get(task.id) ?? [],
+  }));
+
+  const people: Record<string, OverviewPerson> = {};
+  for (const a of assignees) people[a.id] = { id: a.id, name: a.name, kind: a.kind };
 
   return (
-    <div className="px-6 py-4 max-w-4xl mx-auto">
+    <div className="px-6 py-4 max-w-3xl mx-auto">
       <header className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-sm font-medium">Needs your input</h1>
           <p className="text-xs text-(--color-muted) mt-0.5">
-            Tasks waiting on you — approvals, agent questions, decisions · {tasks.length}
+            Approvals, agent questions, decisions · {tasks.length}
           </p>
         </div>
+        <ViewToggle view={view} />
       </header>
 
-      <section className="flex flex-col gap-3">
-        {tasks.length === 0 ? (
-          <p className="text-sm text-(--color-muted) px-2 py-6 text-center">
-            Nothing needs your attention right now.
-          </p>
-        ) : (
-          <TaskList
-            tasks={tasks}
-            childCounts={{}}
-            tagsByTask={tagsByTask}
-            showDate="updatedAt"
-          />
-        )}
-      </section>
+      {tasks.length === 0 ? (
+        <p className="text-sm text-(--color-muted) px-2 py-6 text-center">
+          Nothing needs your attention right now.
+        </p>
+      ) : view === 'list' ? (
+        <section className="flex flex-col gap-3">
+          <TaskList tasks={tasks} childCounts={{}} tagsByTask={tagsByTask} showDate="updatedAt" />
+        </section>
+      ) : view === 'overview' ? (
+        <ReviewOverview items={items} people={people} meId={me.id} />
+      ) : (
+        <ReviewCards items={items} />
+      )}
+    </div>
+  );
+}
+
+function ViewToggle({ view }: { view: View }) {
+  const base = 'px-2.5 py-1 text-xs cursor-pointer transition-colors';
+  const on = 'bg-(--color-surface-2) text-(--color-fg)';
+  const off = 'text-(--color-muted) hover:text-(--color-fg)';
+  const tabs: { key: View; label: string; href: string }[] = [
+    { key: 'cards', label: 'Cards', href: '/reviews' },
+    { key: 'list', label: 'List', href: '/reviews?view=list' },
+    { key: 'overview', label: 'By person', href: '/reviews?view=overview' },
+  ];
+  return (
+    <div className="inline-flex rounded-md border border-(--color-border) overflow-hidden">
+      {tabs.map((t) => (
+        <Link key={t.key} href={t.href} className={`${base} ${view === t.key ? on : off}`}>
+          {t.label}
+        </Link>
+      ))}
     </div>
   );
 }
