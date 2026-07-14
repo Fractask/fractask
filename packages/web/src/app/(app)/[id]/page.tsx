@@ -151,7 +151,7 @@ export default async function FocusPage({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 self-start md:self-auto">
+          <div className="flex flex-wrap items-center justify-end gap-2 self-start md:self-auto">
             {(focused.kind === 'entity' || focused.kind === 'project') && (
               <Link
                 href={`/brain?scope=${focused.id}`}

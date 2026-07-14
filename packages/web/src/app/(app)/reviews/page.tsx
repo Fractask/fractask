@@ -3,6 +3,7 @@ import {
   getTagsForTasks,
   listAssignees,
   listAttachmentsForTasks,
+  listCommentsForTasks,
   listPromptsForTasks,
   listTasks,
   type Task,
@@ -38,21 +39,36 @@ export default async function ReviewsPage({
       : await listTasks(ctx, { reviewerId: me.id, status: 'review' });
   const ids = tasks.map((t) => t.id);
 
-  const [tagsByTask, promptsByTask, attByTask, assignees] = await Promise.all([
+  const [tagsByTask, promptsByTask, attByTask, assignees, commentsByTask] = await Promise.all([
     getTagsForTasks(ctx, ids),
     listPromptsForTasks(ctx, ids),
     listAttachmentsForTasks(ctx, ids),
     listAssignees(ctx),
+    // Comments only matter for the action cards; skip the fetch for the (larger) overview set.
+    view === 'overview' ? Promise.resolve(null) : listCommentsForTasks(ctx, ids),
   ]);
-
-  const items: ReviewItem[] = tasks.map((task) => ({
-    task,
-    prompts: (promptsByTask.get(task.id) ?? []).filter((p) => p.status === 'pending'),
-    attachments: attByTask.get(task.id) ?? [],
-  }));
 
   const people: Record<string, OverviewPerson> = {};
   for (const a of assignees) people[a.id] = { id: a.id, name: a.name, kind: a.kind };
+
+  const items: ReviewItem[] = tasks.map((task) => {
+    const comments = commentsByTask?.get(task.id) ?? [];
+    const last = comments.length > 0 ? comments[comments.length - 1]! : null;
+    return {
+      task,
+      prompts: (promptsByTask.get(task.id) ?? []).filter((p) => p.status === 'pending'),
+      attachments: attByTask.get(task.id) ?? [],
+      lastComment: last
+        ? {
+            body: last.body,
+            source: last.source,
+            authorName:
+              people[last.authorUserId]?.name ?? (last.source === 'agent' ? 'Agent' : 'Someone'),
+            createdAt: last.createdAt,
+          }
+        : null,
+    };
+  });
 
   return (
     <div className="px-6 py-4 max-w-3xl mx-auto">
