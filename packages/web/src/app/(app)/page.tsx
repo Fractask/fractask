@@ -156,9 +156,9 @@ export default async function HomePage({
 
   return (
     <div className="px-6 py-4 max-w-4xl mx-auto">
-      <header className="flex items-center justify-between mb-4">
+      <header className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <h1 className="text-sm font-medium">Tasks</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <HiddenToggle />
           <ViewToggle />
         </div>

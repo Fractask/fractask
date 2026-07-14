@@ -19,10 +19,18 @@ import { answerPromptAction, postCommentAction, setStatusAction } from '@/app/ac
 import { MarkdownView } from '@/components/markdown-view';
 import { textDirection } from '@/lib/text-direction';
 
+export type ReviewComment = {
+  body: string;
+  source: 'human' | 'agent';
+  authorName: string;
+  createdAt: number;
+};
+
 export type ReviewItem = {
   task: Task;
   prompts: AgentPrompt[]; // pending prompts only, oldest first
   attachments: TaskAttachment[];
+  lastComment?: ReviewComment | null;
 };
 
 export function ReviewCards({ items }: { items: ReviewItem[] }) {
@@ -408,10 +416,45 @@ function ReviewCard({
       </div>
 
       <div className="flex max-h-[58vh] flex-col gap-3 overflow-y-auto p-4">
-        {/* The question — the main thing to read */}
-        {prompt && (
-          <div className="rounded-md border-s-2 border-(--color-accent) bg-(--color-bg) px-3 py-2 text-sm">
-            <MarkdownView source={prompt.prompt} />
+        {/* What to review — an explicit agent question if there is one, else the
+            task's own description is the content to review. */}
+        {prompt ? (
+          <div>
+            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-(--color-accent)">
+              The agent is asking
+            </p>
+            <div className="rounded-md border-s-2 border-(--color-accent) bg-(--color-bg) px-3 py-2 text-sm">
+              <MarkdownView source={prompt.prompt} />
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-(--color-muted)">
+              Review this — approve, or send back with a note
+            </p>
+            {task.description ? (
+              <div className="rounded-md border-s-2 border-(--color-border) bg-(--color-bg) px-3 py-2 text-sm">
+                <MarkdownView source={task.description} />
+              </div>
+            ) : (
+              <p className="text-xs text-(--color-muted)">
+                No description — open the task for full context.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Latest note from the agent — often where the real ask lives when
+            the task was moved to review without a formal prompt. */}
+        {item.lastComment && (!prompt || item.lastComment.source === 'agent') && (
+          <div className="rounded-md border border-(--color-border) px-3 py-2">
+            <p className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-(--color-muted)">
+              <MessageSquarePlus size={11} />
+              Latest note · {item.lastComment.authorName}
+            </p>
+            <div className="text-sm">
+              <MarkdownView source={item.lastComment.body} />
+            </div>
           </div>
         )}
 
@@ -436,8 +479,9 @@ function ReviewCard({
           />
         )}
 
-        {/* Task context, secondary */}
-        {task.description && (
+        {/* Task context, secondary — only when a prompt is the primary content
+            (otherwise the description is already shown above as the review). */}
+        {prompt && task.description && (
           <details className="text-xs text-(--color-muted)">
             <summary className="cursor-pointer select-none hover:text-(--color-fg)">
               Task details
