@@ -2,24 +2,24 @@
 
 import Link from 'next/link';
 import { useSearchParams, usePathname } from 'next/navigation';
-import { CalendarRange, LayoutGrid, List, Network } from 'lucide-react';
+import { Activity, CalendarRange, LayoutGrid, List, Network } from 'lucide-react';
 
 /**
- * View switch: List / Tree / Calendar / Gallery. Rendered on the root list, on
- * any task/project focus page, and on the calendar / gallery themselves — so
- * it's a real round-trip toggle, not a one-way door.
+ * View switch: List / Tree / Calendar / Gallery / Activity. Rendered on the
+ * root list, on any task/project focus page, and on the aux views themselves —
+ * so it's a real round-trip toggle, not a one-way door.
  *
  * "Where the list/tree lives" is the base path: `/` at the root, `/<id>` on a
- * focus page. On the calendar or gallery we recover that base from `?scope=`
- * (the project they're filtered to), so switching back to List/Tree lands on
- * the right page.
+ * focus page. On an aux view we recover that base from `?scope=` (the project
+ * they're filtered to), so switching back to List/Tree lands on the right page.
  */
 export function ViewToggle() {
   const pathname = usePathname();
   const params = useSearchParams();
   const onCalendar = pathname === '/calendar';
   const onGallery = pathname === '/gallery';
-  const onAux = onCalendar || onGallery;
+  const onActivity = pathname === '/activity';
+  const onAux = onCalendar || onGallery || onActivity;
 
   const scope = onAux
     ? params.get('scope')
@@ -28,13 +28,15 @@ export function ViewToggle() {
       : pathname.slice(1);
   const basePath = scope ? `/${scope}` : '/';
 
-  const active: 'list' | 'tree' | 'calendar' | 'gallery' = onCalendar
+  const active: 'list' | 'tree' | 'calendar' | 'gallery' | 'activity' = onCalendar
     ? 'calendar'
     : onGallery
       ? 'gallery'
-      : params.get('view') === 'tree'
-        ? 'tree'
-        : 'list';
+      : onActivity
+        ? 'activity'
+        : params.get('view') === 'tree'
+          ? 'tree'
+          : 'list';
 
   // List/Tree: from an aux view (calendar/gallery), jump to the (scoped)
   // list/tree page fresh; on a list/tree page, preserve the current query
@@ -71,6 +73,9 @@ export function ViewToggle() {
       </Link>
       <Link href={auxHref('/gallery')} className={cls(active === 'gallery')}>
         <LayoutGrid size={14} /> Gallery
+      </Link>
+      <Link href={auxHref('/activity')} className={cls(active === 'activity')}>
+        <Activity size={14} /> Activity
       </Link>
     </div>
   );

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
+  Activity,
   Archive,
   ArrowDownToLine,
   Building2,
@@ -99,6 +100,7 @@ type StaticItem = {
     | 'inbox'
     | 'today'
     | 'calendar'
+    | 'activity'
     | 'all'
     | 'goals'
     | 'tags'
@@ -120,6 +122,7 @@ const ICONS = {
   inbox: Inbox,
   today: CalendarDays,
   calendar: CalendarRange,
+  activity: Activity,
   all: ListTodo,
   goals: Target,
   tags: Tag,
