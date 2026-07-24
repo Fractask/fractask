@@ -1,7 +1,8 @@
 import { Bot, UserCog, User as UserIcon } from 'lucide-react';
-import { listShareableUsers, type User } from '@getshit/core';
+import { listShareableUsers, listCliTokens, type User } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 import { NewUserForm } from './new-user-form';
+import { AgentTokens, type AgentTokenMeta } from './agent-tokens';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,7 +39,7 @@ function badge(label: string, color: 'green' | 'gray' | 'amber'): React.ReactNod
   );
 }
 
-function UserRow({ u, isMe }: { u: User; isMe: boolean }) {
+function UserRow({ u, isMe, tokens }: { u: User; isMe: boolean; tokens: AgentTokenMeta[] }) {
   const kindMeta = KIND_BADGE[u.kind];
   const KindIcon = kindMeta.Icon;
   return (
@@ -63,6 +64,9 @@ function UserRow({ u, isMe }: { u: User; isMe: boolean }) {
           </div>
         )}
         <div className="text-[10px] text-(--color-muted)">Created {formatDate(u.createdAt)}</div>
+        {u.kind === 'agent' && (
+          <AgentTokens agentId={u.id} agentName={u.name?.trim() || 'this agent'} tokens={tokens} />
+        )}
       </div>
     </li>
   );
@@ -74,6 +78,25 @@ export default async function UsersPage() {
   const { findUserById } = await import('@getshit/core');
   const me = await findUserById(ctx.userId);
   const all: User[] = me ? [me, ...others] : others;
+
+  // Load CLI/MCP tokens for every agent so each row can manage its own keys.
+  const tokensByAgent = new Map<string, AgentTokenMeta[]>();
+  await Promise.all(
+    all
+      .filter((u) => u.kind === 'agent')
+      .map(async (u) => {
+        const rows = await listCliTokens(u.id);
+        tokensByAgent.set(
+          u.id,
+          rows.map((t) => ({
+            id: t.id,
+            label: t.label,
+            createdAt: t.createdAt,
+            lastUsedAt: t.lastUsedAt,
+          })),
+        );
+      }),
+  );
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-8 flex flex-col gap-6">
@@ -89,7 +112,12 @@ export default async function UsersPage() {
 
       <ul className="flex flex-col divide-y divide-(--color-border)">
         {all.map((u) => (
-          <UserRow key={u.id} u={u} isMe={u.id === ctx.userId} />
+          <UserRow
+            key={u.id}
+            u={u}
+            isMe={u.id === ctx.userId}
+            tokens={tokensByAgent.get(u.id) ?? []}
+          />
         ))}
       </ul>
     </div>

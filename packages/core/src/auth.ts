@@ -131,6 +131,25 @@ export async function createCliToken(
   return { token: raw, row };
 }
 
+/**
+ * Mint a token on behalf of an *agent* user. Guards against minting bearer
+ * tokens for humans or guests — a human authenticates via their own login, and
+ * an agent token is meant to be handed to an automated MCP/CLI client scoped to
+ * whatever that agent has been shared. The caller (any workspace member) is
+ * trusted to manage agents; the kind check is the safety rail.
+ */
+export async function createAgentCliToken(
+  agentUserId: string,
+  label: string | null,
+): Promise<{ token: string; row: CliToken }> {
+  const target = await findUserById(agentUserId);
+  if (!target) throw new Error('Agent not found.');
+  if (target.kind !== 'agent') {
+    throw new Error('CLI tokens can only be minted for agent users.');
+  }
+  return createCliToken(agentUserId, label);
+}
+
 export async function listCliTokens(userId: string): Promise<CliToken[]> {
   const db = getDb();
   return db

@@ -24,6 +24,7 @@ export {
   findUserById,
   createUser,
   createCliToken,
+  createAgentCliToken,
   listCliTokens,
   revokeCliToken,
   resolveTokenToUser,
