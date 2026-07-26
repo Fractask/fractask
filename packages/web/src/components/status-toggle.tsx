@@ -4,6 +4,7 @@ import { Archive, CheckCircle2, Circle, CircleDashed, Eye, Layers, Moon } from '
 import { useTransition } from 'react';
 import type { TaskStatus } from '@getshit/core';
 import { setStatusAction } from '@/app/actions';
+import { useReadOnly } from './read-only-context';
 
 // Click cycle for the four primary states. The "parked" states (backlog /
 // snoozed / archived) all restore to open on click — they're never cycle
@@ -65,6 +66,7 @@ export function StatusToggle({
   showLabel?: boolean;
 }) {
   const [pending, start] = useTransition();
+  const readOnly = useReadOnly();
   const Icon = ICONS[status];
   const color = COLORS[status];
   const next = NEXT[status];
@@ -73,14 +75,15 @@ export function StatusToggle({
     <button
       type="button"
       aria-label={`Status: ${LABELS[status]}. Click to mark ${LABELS[next]}`}
-      title={`${LABELS[status]} — click to mark ${LABELS[next]}`}
-      onClick={() =>
+      title={readOnly ? 'Read-only preview' : `${LABELS[status]} — click to mark ${LABELS[next]}`}
+      onClick={() => {
+        if (readOnly) return;
         start(async () => {
           await setStatusAction(id, next);
-        })
-      }
-      disabled={pending}
-      className={`shrink-0 inline-flex items-center gap-1.5 ${color} transition-colors disabled:opacity-50 cursor-pointer`}
+        });
+      }}
+      disabled={pending || readOnly}
+      className={`shrink-0 inline-flex items-center gap-1.5 ${color} transition-colors disabled:opacity-50 ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
     >
       <Icon size={16} strokeWidth={2} />
       {showLabel && (

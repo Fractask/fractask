@@ -28,6 +28,8 @@ export type ActivityEvent = {
   taskStatus: TaskStatus;
   actorName: string;
   actorKind: 'person' | 'agent';
+  /** For agent actions: the account the agent acted under (shown small). */
+  actorAccount?: string;
   body?: string;
   media?: ActivityMedia[];
 };
@@ -169,6 +171,14 @@ function EventRow({ e, now }: { e: ActivityEvent; now: number }) {
           {e.actorKind === 'agent' && (
             <span className="rounded bg-(--color-surface-2) px-1 text-[10px] uppercase tracking-wide text-(--color-muted)">
               agent
+            </span>
+          )}
+          {e.actorKind === 'agent' && e.actorAccount && (
+            <span
+              className="text-[11px] text-(--color-muted)"
+              title={`Ran under the ${e.actorAccount} account`}
+            >
+              · {e.actorAccount}
             </span>
           )}
           <span className="text-(--color-muted)">{VERB[e.type]}</span>

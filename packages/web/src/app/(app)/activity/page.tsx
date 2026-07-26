@@ -159,6 +159,11 @@ export default async function ActivityPage({
       }));
       const at = Math.max(...arr.map((a) => a.createdAt));
       const agentAdded = arr.some((a) => a.source === 'agent');
+      // The account the agent acted under. Until agents get their own user
+      // identity (scoped MCP tokens), an agent uploads under whoever's account
+      // it authenticated as — surface that so "An agent" isn't anonymous.
+      const owner = arr.find((a) => a.source === 'agent') ?? arr[0];
+      const account = agentAdded && owner ? nameById.get(owner.userId)?.name : undefined;
       events.push({
         id: `att:${taskId}:${bucket}`,
         type: 'attachment',
@@ -168,6 +173,7 @@ export default async function ActivityPage({
         taskStatus: statusById.get(taskId) ?? 'open',
         actorName: agentAdded ? 'An agent' : 'You',
         actorKind: agentAdded ? 'agent' : 'person',
+        ...(account ? { actorAccount: account } : {}),
         media,
       });
     }

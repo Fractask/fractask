@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from 'react';
 import { Plus } from 'lucide-react';
 import type { TaskKind } from '@getshit/core';
 import { createTaskAction } from '@/app/actions';
+import { useReadOnly } from './read-only-context';
 
 const PLACEHOLDER: Record<TaskKind, string> = {
   entity: 'Add an entity (company, area)…',
@@ -35,9 +36,11 @@ export function NewTaskForm({
   const [kind, setKind] = useState<TaskKind>(initial);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const readOnly = useReadOnly();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const submit = () => {
+    if (readOnly) return;
     const trimmed = title.trim();
     if (!trimmed) return;
     start(async () => {
@@ -75,17 +78,17 @@ export function NewTaskForm({
           ref={inputRef}
           data-new-task-input
           name="title"
-          placeholder={placeholder}
+          placeholder={readOnly ? 'Read-only preview' : placeholder}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          disabled={pending}
+          disabled={pending || readOnly}
           className="flex-1 bg-transparent text-sm outline-none placeholder:text-(--color-muted) disabled:opacity-50"
         />
         {showKindPicker !== false && (
           <select
             value={kind}
             onChange={(e) => setKind(e.target.value as TaskKind)}
-            disabled={pending}
+            disabled={pending || readOnly}
             className="bg-transparent text-xs text-(--color-muted) outline-none border-none cursor-pointer"
             aria-label="Kind"
           >

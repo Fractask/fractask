@@ -1,4 +1,4 @@
-import { Bot, UserCog, User as UserIcon } from 'lucide-react';
+import { Bot, Eye, UserCog, User as UserIcon } from 'lucide-react';
 import { listShareableUsers, listCliTokens, type User } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 import { NewUserForm } from './new-user-form';
@@ -54,6 +54,15 @@ function UserRow({ u, isMe, tokens }: { u: User; isMe: boolean; tokens: AgentTok
           {isMe && badge('you', 'green')}
           {u.kind === 'human' &&
             (u.googleId ? badge('Google', 'gray') : badge('not signed in', 'amber'))}
+          {u.kind === 'agent' && (
+            <a
+              href={`/api/view-as/enter/${u.id}`}
+              className="inline-flex items-center gap-1 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-600 hover:bg-violet-500/20"
+              title={`Preview Fractask as ${u.name?.trim() || 'this agent'} (read-only)`}
+            >
+              <Eye size={10} /> View as
+            </a>
+          )}
         </div>
         <div className="text-xs text-(--color-muted) font-mono-id">
           {u.email ?? <span className="opacity-60">(no email)</span>} · {u.id}

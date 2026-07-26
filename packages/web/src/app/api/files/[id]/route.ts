@@ -1,9 +1,36 @@
 import { NextResponse } from 'next/server';
-import { getAttachment, getStorage, NotFoundError } from '@getshit/core';
+import { getAttachment, getStorage, NotFoundError, resolveTokenToUser } from '@getshit/core';
+import type { Context } from '@getshit/core';
 import { getRequestContext } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * Resolve the caller to a Context from either an `Authorization: Bearer <gs_…>`
+ * (or `x-getshit-token`) header — the same `cli_tokens` bearer that `/api/mcp`
+ * uses — or, failing that, the Auth.js session cookie. Agents authenticate with
+ * a bearer token and have no browser session, so without the bearer path they
+ * could read that an attachment exists (via MCP) but never pull its bytes.
+ * Returns null when neither credential is present/valid.
+ */
+async function resolveDownloadContext(req: Request): Promise<Context | null> {
+  const header = req.headers.get('authorization') ?? req.headers.get('x-getshit-token');
+  if (header) {
+    const token = header.startsWith('Bearer ')
+      ? header.slice('Bearer '.length).trim()
+      : header.trim();
+    if (token.length > 0) {
+      const user = await resolveTokenToUser(token);
+      return user ? { userId: user.id } : null;
+    }
+  }
+  try {
+    return await getRequestContext();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * GET /api/files/[id]
@@ -13,13 +40,11 @@ export const dynamic = 'force-dynamic';
  * signed URL so the browser pulls bytes straight from object storage.
  */
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  let auth;
-  try {
-    auth = await getRequestContext();
-  } catch {
+  const auth = await resolveDownloadContext(req);
+  if (!auth) {
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
   }
 

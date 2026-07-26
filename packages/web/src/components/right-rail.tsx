@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { Bot, RefreshCcw, Send } from 'lucide-react';
 import { ModelPicker, useStoredModelId } from './model-picker';
+import { useReadOnly } from './read-only-context';
 
 type Message = { role: 'user' | 'assistant'; content: string };
 
@@ -28,6 +29,7 @@ export function RightRail() {
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const modelId = useStoredModelId();
+  const readOnly = useReadOnly();
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -35,7 +37,7 @@ export function RightRail() {
 
   const send = async () => {
     const trimmed = input.trim();
-    if (!trimmed || busy) return;
+    if (!trimmed || busy || readOnly) return;
     const next: Message[] = [...messages, { role: 'user', content: trimmed }];
     setMessages(next);
     setInput('');
@@ -130,13 +132,13 @@ export function RightRail() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask the agent…"
-          disabled={busy}
+          placeholder={readOnly ? 'Read-only preview' : 'Ask the agent…'}
+          disabled={busy || readOnly}
           className="flex-1 bg-(--color-surface) rounded px-2 py-1.5 text-sm outline-none border border-(--color-border) focus:border-(--color-accent)"
         />
         <button
           type="submit"
-          disabled={busy || !input.trim()}
+          disabled={busy || readOnly || !input.trim()}
           className="p-1.5 rounded bg-(--color-surface) hover:bg-(--color-surface-2) disabled:opacity-50 cursor-pointer"
         >
           <Send size={14} />

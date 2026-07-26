@@ -17,6 +17,7 @@ import {
 import type { Tag, Task } from '@getshit/core';
 import { deleteTaskAction, setStatusAction, updateTaskAction } from '@/app/actions';
 import { StatusToggle } from './status-toggle';
+import { useReadOnly } from './read-only-context';
 import { formatRelativeDate } from '@/lib/sort';
 
 export type DragHandleProps = {
@@ -49,6 +50,7 @@ export function TaskRow({
   showDate?: 'createdAt' | 'updatedAt' | undefined;
 }) {
   const [editing, setEditing] = useState(false);
+  const readOnly = useReadOnly();
 
   const padding = density === 'compact' ? 'py-1' : 'py-1.5';
   const isDone = task.status === 'done';
@@ -59,7 +61,7 @@ export function TaskRow({
       data-task-id={task.id}
       className={`group flex items-center gap-2 px-2 ${padding} rounded-md hover:bg-(--color-surface) focus-within:bg-(--color-surface)`}
     >
-      {dragHandle && (
+      {dragHandle && !readOnly && (
         <span
           draggable
           onDragStart={dragHandle.onDragStart}
@@ -144,7 +146,7 @@ export function TaskRow({
           {task.id.slice(0, 8)}
         </span>
       )}
-      {!editing && (
+      {!editing && !readOnly && (
         <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           <button
             type="button"
