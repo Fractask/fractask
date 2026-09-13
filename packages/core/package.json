@@ -17,12 +17,16 @@
     "./llm": {
       "types": "./dist/llm.d.ts",
       "import": "./dist/llm.js"
+    },
+    "./agent-templates": {
+      "types": "./dist/agent-templates.d.ts",
+      "import": "./dist/agent-templates.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/smoke.test.ts src/tasks.test.ts src/mcp-tools.test.ts",
+    "test": "tsx --test src/smoke.test.ts src/recurrence.test.ts src/recurrence-cron.test.ts src/tasks.test.ts src/mcp-tools.test.ts src/focus.test.ts src/prompt-guards.test.ts src/pass-on.test.ts src/scratchpad.test.ts src/mcp-errors.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
   },

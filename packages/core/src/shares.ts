@@ -34,6 +34,7 @@ async function findOrCreateUserByEmail(email: string): Promise<User> {
     image: null,
     kind: 'human',
     endpoint: null,
+    isAdmin: false,
     createdAt: Date.now(),
   };
   await db.insert(users).values(newUser);

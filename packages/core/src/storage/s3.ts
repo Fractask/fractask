@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -54,6 +55,36 @@ export function createS3Adapter(): StorageAdapter {
         new GetObjectCommand({ Bucket: bucket, Key: key }),
         { expiresIn: ttlSeconds },
       );
+    },
+    async getSignedUploadUrl(key, { mimeType, sizeBytes, ttlSeconds = 900 }) {
+      // Content-Type and Content-Length are signed, so the client MUST send
+      // both and they must match exactly — the URL is minted for one specific
+      // object, not as a general write grant on the bucket. Verified working
+      // against GCS's S3-compatible XML API with plain `curl --upload-file`.
+      return getSignedUrl(
+        client,
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: mimeType,
+          ContentLength: sizeBytes,
+        }),
+        { expiresIn: ttlSeconds },
+      );
+    },
+    async head(key) {
+      try {
+        const res = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        return {
+          sizeBytes: Number(res.ContentLength ?? 0),
+          ...(res.ContentType ? { mimeType: res.ContentType } : {}),
+        };
+      } catch (err) {
+        const name = (err as { name?: string }).name;
+        const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+        if (name === 'NotFound' || name === 'NoSuchKey' || status === 404) return null;
+        throw err;
+      }
     },
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));

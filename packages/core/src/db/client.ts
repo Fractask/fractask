@@ -44,8 +44,16 @@ export function getDb(): Db {
   }
 
   const authToken = process.env['GETSHIT_DB_AUTH_TOKEN'];
-  const replicaDisabled = process.env['GETSHIT_EMBEDDED_REPLICA'] === '0';
-  const useReplica = isRemoteUrl(url) && !replicaDisabled;
+  // Opt-IN, not opt-out. An embedded replica bootstraps by exporting the entire
+  // remote database to a local file, so it only pays off when one long-lived
+  // process amortizes that cost over many reads. No entrypoint here does that:
+  // the CLI is one-shot, the MCP server is short-lived, and web runs serverless
+  // — each would pay a full export on every start/cold start. Set
+  // GETSHIT_EMBEDDED_REPLICA=1 only for a genuinely long-running reader, and
+  // give it a dedicated GETSHIT_REPLICA_PATH (replicas are not safe for
+  // concurrent multi-process access).
+  const replicaEnabled = process.env['GETSHIT_EMBEDDED_REPLICA'] === '1';
+  const useReplica = isRemoteUrl(url) && replicaEnabled;
 
   let client: Client;
   let replicated = false;

@@ -105,6 +105,7 @@ export async function createAssignee(
     image: null,
     kind: userKind,
     endpoint: null,
+    isAdmin: false,
     createdAt: now(),
   };
   await db.insert(users).values(row);

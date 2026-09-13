@@ -113,6 +113,69 @@
       "when": 1779666000000,
       "tag": "0015_brain_scope_task",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1785500000000,
+      "tag": "0016_user_is_admin",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1785600000000,
+      "tag": "0017_recurrence",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1785700000000,
+      "tag": "0018_assignee_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1785800000000,
+      "tag": "0019_prompt_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1787958114000,
+      "tag": "0020_focus_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1788041500000,
+      "tag": "0021_agent_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1788336000000,
+      "tag": "0022_goal_progress",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1788422400000,
+      "tag": "0023_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1788940800000,
+      "tag": "0024_scratchpad",
+      "breakpoints": true
     }
   ]
 }

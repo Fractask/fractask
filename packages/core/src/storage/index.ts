@@ -14,9 +14,11 @@
  * MinIO, B2) via @aws-sdk/client-s3. Force-local with `GETSHIT_STORAGE=local`
  * if you need the credentials in env for some other purpose.
  *
- * Adapters expose four operations: put, getStream (for the local serve path),
- * getSignedUrl (returns null when the adapter can't presign, telling the
- * web layer to fall back to streaming), and delete.
+ * Adapters expose: put, getStream (for the local serve path), getSignedUrl
+ * (returns null when the adapter can't presign, telling the web layer to fall
+ * back to streaming), getSignedUploadUrl (the reverse — a URL the CALLER can
+ * PUT bytes to, so an agent on a headless box never has to route a file
+ * through a public CDN to get it in here), head, and delete.
  */
 import type { AttachmentStorage } from '../schema.js';
 import { createLocalAdapter } from './local.js';
@@ -29,6 +31,18 @@ export interface StorageAdapter {
   getStream(key: string): Promise<{ body: ReadableStream<Uint8Array>; mimeType?: string }>;
   /** Returns a time-limited URL the browser can hit directly, or null if not supported (local). */
   getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
+  /**
+   * Time-limited URL the caller can PUT bytes to, or null if the adapter can't
+   * presign. `mimeType` and `sizeBytes` are bound into the signature, so the
+   * URL only accepts exactly the object it was minted for — a stolen or
+   * replayed URL can't be used to push something larger or different.
+   */
+  getSignedUploadUrl(
+    key: string,
+    opts: { mimeType: string; sizeBytes: number; ttlSeconds?: number },
+  ): Promise<string | null>;
+  /** Object metadata, or null when the key doesn't exist. */
+  head(key: string): Promise<{ sizeBytes: number; mimeType?: string } | null>;
   delete(key: string): Promise<void>;
 }
 

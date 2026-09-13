@@ -7,16 +7,19 @@ import {
   tasks,
   taskAttachments,
   type BrainNote,
-  type TaskAttachment,
 } from './schema.js';
 import {
+  accessibleTasksCte,
   assertAccessibleNoteExists,
   assertAccessibleExists,
+  assertFilterIdNotHidden,
+  assertNoteFilterIdNotHidden,
   getAccessibleNoteIds,
   getAccessibleTaskIds,
   NotFoundError,
 } from './access.js';
 import { getStorage } from './storage/index.js';
+import { withDownloadUrls, type AttachmentWithUrl } from './attachments.js';
 import {
   createBrainNoteInputSchema,
   listBrainNotesFilterSchema,
@@ -30,7 +33,7 @@ import { searchTasks } from './tasks.js';
 
 export type BrainNoteWithChildren = BrainNote & {
   children: BrainNote[];
-  attachments: TaskAttachment[];
+  attachments: AttachmentWithUrl[];
 };
 
 const EMPTY_DOC = '{"type":"doc","content":[]}';
@@ -179,7 +182,7 @@ export async function getBrainNote(ctx: Context, id: string): Promise<BrainNoteW
   });
   if (!note) return null;
   const accessibleIds = await getAccessibleNoteIds(ctx);
-  const [children, attachments] = await Promise.all([
+  const [children, attachmentRows] = await Promise.all([
     accessibleIds.length === 0
       ? Promise.resolve([] as BrainNote[])
       : db
@@ -193,6 +196,7 @@ export async function getBrainNote(ctx: Context, id: string): Promise<BrainNoteW
       .where(eq(taskAttachments.brainNoteId, id))
       .orderBy(asc(taskAttachments.createdAt)),
   ]);
+  const attachments = await withDownloadUrls(attachmentRows);
   return { ...note, children, attachments };
 }
 
@@ -224,8 +228,15 @@ export async function listBrainNotes(
     .from(brainNotes)
     .where(and(...conditions))
     .orderBy(asc(brainNotes.position), asc(brainNotes.createdAt));
-  if (f.limit !== undefined) return query.limit(f.limit);
-  return query;
+  const rows = f.limit !== undefined ? await query.limit(f.limit) : await query;
+  // Same rule as listTasks: `[]` is the success shape, so a hidden filter id
+  // reads as "this scope holds no notes". Two id arguments, two object types —
+  // a scope TASK and a parent NOTE — so two guards, checked empty-result-only.
+  if (rows.length === 0) {
+    if (typeof f.scopeTaskId === 'string') await assertFilterIdNotHidden(ctx, f.scopeTaskId);
+    if (typeof f.parentNoteId === 'string') await assertNoteFilterIdNotHidden(ctx, f.parentNoteId);
+  }
+  return rows;
 }
 
 /**
@@ -282,16 +293,7 @@ export async function updateBrainNote(
 async function collectNoteDescendantIds(ctx: Context, rootId: string): Promise<string[]> {
   const db = getDb();
   const rows = await db.all<{ id: string }>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible_tasks(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible_tasks a ON t.parent_id = a.id
-    ),
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId, 'accessible_tasks')},
     accessible_notes(id) AS (
       SELECT id FROM brain_notes
        WHERE (scope_task_id IS NULL AND user_id = ${ctx.userId})
@@ -381,10 +383,26 @@ export async function searchBrainNotes(
   query: string,
   options: SearchBrainNotesOptions = {},
 ): Promise<BrainNoteSearchHit[]> {
+  // Same empty-result rule as listBrainNotes, but this function has TWO early
+  // returns above the query, and both produce the very `[]` the guard exists to
+  // explain. A guard placed only after the query would be dead for a caller who
+  // owns no notes at all — which is exactly the caller most likely to be
+  // searching a scope someone else owns. So: one guard, run at every empty exit.
+  const guardScope = async () => {
+    if (typeof options.scopeTaskId === 'string') {
+      await assertFilterIdNotHidden(ctx, options.scopeTaskId);
+    }
+  };
   const q = query.trim();
-  if (q.length === 0) return [];
+  if (q.length === 0) {
+    await guardScope();
+    return [];
+  }
   const accessibleIds = await getAccessibleNoteIds(ctx);
-  if (accessibleIds.length === 0) return [];
+  if (accessibleIds.length === 0) {
+    await guardScope();
+    return [];
+  }
 
   const escaped = q.replace(/[!%_]/g, '!$&');
   const pattern = `%${escaped}%`;
@@ -411,6 +429,7 @@ export async function searchBrainNotes(
     .where(and(...conditions))
     .orderBy(desc(brainNotes.updatedAt))
     .limit(limit);
+  if (rows.length === 0) await guardScope();
 
   return rows.map((r) => ({
     id: r.id,

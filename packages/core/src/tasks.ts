@@ -15,16 +15,21 @@ import { nanoid } from 'nanoid';
 import type { Context } from './context.js';
 import { getDb } from './db/client.js';
 import {
+  agentPrompts,
   tags,
   tasks,
   taskTags,
+  taskCompletions,
   type Task,
   type TaskAttachment,
   type TaskKind,
   type TaskStatus,
 } from './schema.js';
 import { listAttachments } from './attachments.js';
-import { listPromptsForTask, type AgentPrompt } from './prompts.js';
+import { nextOccurrence } from './recurrence.js';
+import { hasPendingPrompt, listPromptsForTask, type AgentPrompt } from './prompts.js';
+import { findUserById, isAgentCall } from './auth.js';
+import { isAgentRuleEnabled } from './settings.js';
 import { listCommentsForTask } from './comments.js';
 import type { TaskComment } from './schema.js';
 import {
@@ -36,12 +41,14 @@ import {
   type UpdateTaskInput,
 } from './types.js';
 import {
+  accessibleTasksCte,
   assertAccessibleExists,
+  assertFilterIdNotHidden,
   getAccessibleTaskIds,
   NotFoundError,
 } from './access.js';
 
-export { NotFoundError, ForbiddenError } from './access.js';
+export { NotFoundError, NotSharedError, ForbiddenError, NOT_SHARED_MESSAGE } from './access.js';
 
 export type TaskWithChildren = Task & {
   children: Task[];
@@ -56,6 +63,39 @@ export class CycleError extends Error {
   constructor(message = 'Move would create a cycle') {
     super(message);
     this.name = 'CycleError';
+  }
+}
+
+/**
+ * Thrown when an agent tries to park a task in `review` with nothing for the
+ * human to answer. See `assertMayEnterReview`.
+ */
+export class ReviewWithoutPromptError extends Error {
+  constructor(
+    message = 'status="review" is the human\'s needs-input queue and needs a question to answer. ' +
+      'Call ask_human(...) — it moves the task to review for you — or, if you are only reporting ' +
+      'progress or handing off finished work, use post_comment(...) and leave the task at ' +
+      'status="doing" (or "done" if it is complete).',
+  ) {
+    super(message);
+    this.name = 'ReviewWithoutPromptError';
+  }
+}
+
+/**
+ * Thrown when something enters `review` with no pending prompt AND nothing
+ * for the human to act on — no description, no comment. See
+ * `assertMayEnterReview`.
+ */
+export class ReviewWithoutContextError extends Error {
+  constructor(
+    message = 'status="review" is the human\'s needs-input queue and needs something for them to ' +
+      'act on — this task has no pending question, no description, and no comment explaining why ' +
+      'it needs a look. Call ask_human(...) for a real question, or give it context first: set a ' +
+      'description of what to check, or post_comment(...) with the reason, then move it to review.',
+  ) {
+    super(message);
+    this.name = 'ReviewWithoutContextError';
   }
 }
 
@@ -126,7 +166,11 @@ export async function listTasks(ctx: Context, filter: ListTasksFilter = {}): Pro
   const accessibleIds = await getAccessibleTaskIds(ctx);
   if (accessibleIds.length === 0) return [];
   const conditions = [inArray(tasks.id, accessibleIds)];
-  if (f.parentId === null) {
+  if (f.deep && (f.parentId === null || f.parentId === undefined)) {
+    // Deep query: no parent constraint at all, so the other filters match
+    // anywhere in the accessible tree. `accessibleIds` still bounds it, so
+    // this widens depth, never visibility.
+  } else if (f.parentId === null) {
     // "Top of my view" = real roots I own + tasks shared in (whose parent
     // isn't itself accessible to me). A shared task's parent lives in the
     // owner's tree but is invisible here, so it surfaces as a root.
@@ -165,11 +209,19 @@ export async function listTasks(ctx: Context, filter: ListTasksFilter = {}): Pro
       .where(and(eq(taskTags.userId, ctx.userId), eq(taskTags.tagId, f.tagId)));
     conditions.push(inArray(tasks.id, tagged));
   }
-  return db
+  const rows = await db
     .select()
     .from(tasks)
     .where(and(...conditions))
     .orderBy(asc(tasks.position), asc(tasks.createdAt));
+  // An empty list is the SUCCESS shape, so a hidden parentId reads as "that
+  // subtree is empty" rather than as a failure. Checked only when the answer is
+  // already empty — a caller assigned a child of an unreachable parent still
+  // gets its rows, exactly as before. See assertFilterIdNotHidden.
+  if (rows.length === 0 && typeof f.parentId === 'string') {
+    await assertFilterIdNotHidden(ctx, f.parentId);
+  }
+  return rows;
 }
 
 /**
@@ -206,16 +258,7 @@ export async function listTasksWithChildCount(
       : parentClause;
 
   const rows = await db.all<Task & { child_count: number }>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    )
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
     SELECT ${tasks}.*, (
       SELECT COUNT(*) FROM ${tasks} AS c
        WHERE c.parent_id = ${tasks.id}
@@ -246,6 +289,11 @@ export async function listTasksWithChildCount(
     assigneeId: (r as unknown as { assignee_id: string | null }).assignee_id,
     reviewerId: (r as unknown as { reviewer_id: string | null }).reviewer_id,
     recurrence: (r as unknown as { recurrence: string | null }).recurrence,
+    recurrenceMode: (r as unknown as { recurrence_mode: Task['recurrenceMode'] }).recurrence_mode,
+    goalId: (r as unknown as { goal_id: string | null }).goal_id,
+    milestoneId: (r as unknown as { milestone_id: string | null }).milestone_id,
+    progressPct: (r as unknown as { progress_pct: number | null }).progress_pct,
+    occurrenceDate: (r as unknown as { occurrence_date: number | null }).occurrence_date,
     priority: (r as unknown as { priority: number | null }).priority,
     createdAt: (r as unknown as { created_at: number }).created_at,
     updatedAt: (r as unknown as { updated_at: number }).updated_at,
@@ -376,20 +424,10 @@ export async function getSubtree(ctx: Context, id: string): Promise<TaskTree | n
 }
 
 async function collectDescendantIds(ctx: Context, rootId: string): Promise<string[]> {
-  // Walk the tree from rootId, but only across rows accessible to ctx —
-  // owned-by-me OR transitively reachable from a task_shares row for me.
+  // Walk the tree from rootId, but only across rows accessible to ctx.
   const db = getDb();
   const result = await db.all<{ id: string }>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    ),
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)},
     subtree(id) AS (
       SELECT id FROM ${tasks}
        WHERE ${tasks.id} = ${rootId}
@@ -421,9 +459,63 @@ function assembleTree(rows: Task[], rootId: string): TaskTree | null {
   return root;
 }
 
+/**
+ * Validates a Focus goal link before it's written. `goalId` must be an
+ * accessible task with kind='goal'; `milestoneId` must be a direct child of
+ * that goal (a goal's path nodes ARE its direct children, in sibling order —
+ * node state is derived, never stored). Null links are always valid: a task
+ * with no goal is a "specific" task, which is a legitimate state.
+ */
+async function assertValidGoalLink(
+  ctx: Context,
+  goalId: string | null,
+  milestoneId: string | null,
+): Promise<void> {
+  if (goalId !== null) {
+    const goal = await assertAccessibleExists(ctx, goalId);
+    if (goal.kind !== 'goal') {
+      throw new Error(
+        `goalId must reference a task with kind="goal" — "${goal.title}" is kind="${goal.kind}".`,
+      );
+    }
+  }
+  if (milestoneId !== null) {
+    if (goalId === null) {
+      throw new Error('milestoneId requires goalId — a milestone is a direct child of the goal.');
+    }
+    const milestone = await assertAccessibleExists(ctx, milestoneId);
+    if (milestone.parentId !== goalId) {
+      throw new Error(
+        `milestoneId must be a DIRECT child of the goal task (the goal's path nodes are its direct children) — "${milestone.title}" is not a direct child of ${goalId}.`,
+      );
+    }
+  }
+}
+
 export async function createTask(ctx: Context, input: CreateTaskInput): Promise<Task> {
   const parsed = createTaskInputSchema.parse(input);
   const db = getDb();
+
+  // A brand-new task can't have a pending prompt or a comment yet, so an
+  // agent can NEVER satisfy the prompt rule on the create path: a task born
+  // in review is by construction the prompt-less parking `updateTask` blocks.
+  // The description is not a substitute here — a finished-deliverable report
+  // always has one, and that is exactly the card this rule exists to keep out
+  // of the queue. (Measured on prod 2026-09-09: create_task(status="review")
+  // with a description was accepted while the identical update_task was
+  // rejected.) Humans and rule-off agents are held to the context floor only:
+  // created straight into review, a task's only possible context is its own
+  // description. Same floor as assertMayEnterReview: no context in, no review.
+  if (parsed.status === 'review') {
+    const caller = await findUserById(ctx.userId);
+    if (isAgentCall(ctx, caller) && (await isAgentRuleEnabled('review_requires_prompt'))) {
+      throw new ReviewWithoutPromptError();
+    }
+    const description = parsed.description ?? null;
+    if (description === null || description.trim().length === 0) {
+      throw new ReviewWithoutContextError();
+    }
+  }
 
   const parentId = parsed.parentId ?? null;
   // Inherited owner: a child of a parent shared with me lives in the
@@ -432,6 +524,10 @@ export async function createTask(ctx: Context, input: CreateTaskInput): Promise<
   if (parentId !== null) {
     const parent = await assertAccessibleExists(ctx, parentId);
     ownerId = parent.userId;
+  }
+
+  if (parsed.goalId !== undefined || parsed.milestoneId !== undefined) {
+    await assertValidGoalLink(ctx, parsed.goalId ?? null, parsed.milestoneId ?? null);
   }
 
   const ts = now();
@@ -450,6 +546,11 @@ export async function createTask(ctx: Context, input: CreateTaskInput): Promise<
     assigneeId: parsed.assigneeId ?? null,
     reviewerId: parsed.reviewerId ?? null,
     recurrence: parsed.recurrence ?? null,
+    recurrenceMode: parsed.recurrenceMode ?? 'checkbox',
+    goalId: parsed.goalId ?? null,
+    milestoneId: parsed.milestoneId ?? null,
+    progressPct: parsed.progressPct ?? null,
+    occurrenceDate: null,
     priority: null,
     createdAt: ts,
     updatedAt: ts,
@@ -471,6 +572,84 @@ export async function createTask(ctx: Context, input: CreateTaskInput): Promise<
   return row;
 }
 
+/**
+ * Guards the transition into `review`, the human's unified "needs your input"
+ * queue (surfaced as a worked card in Focus). Agents were setting it
+ * directly to park finished deliverables and status notes there, so most of
+ * the queue had nothing to answer (19 of 28 review tasks on one sampled
+ * day). An agent now reaches review through `ask_human`, which posts a real
+ * question and moves the task itself — unless `review_requires_prompt` is
+ * turned off, in which case an agent can still enter review directly.
+ *
+ * Either way, entering without a pending prompt still needs SOME context —
+ * a description or at least one existing comment — for both agents (rule
+ * off) and humans (moving something to review from the web UI with nothing
+ * on it). A bare task with nothing attached isn't "needs your input", it's
+ * an accident: it lands as a Focus card with no question and no way to know
+ * why it's there.
+ */
+async function assertMayEnterReview(
+  ctx: Context,
+  taskId: string,
+  patch: Pick<UpdateTaskInput, 'description'>,
+  existing: Task,
+): Promise<void> {
+  if (await hasPendingPrompt(taskId)) return;
+
+  const caller = await findUserById(ctx.userId);
+  if (isAgentCall(ctx, caller) && (await isAgentRuleEnabled('review_requires_prompt'))) {
+    throw new ReviewWithoutPromptError();
+  }
+
+  const description = patch.description !== undefined ? patch.description : existing.description;
+  if (description !== null && description.trim().length > 0) return;
+  const comments = await listCommentsForTask(ctx, taskId);
+  if (comments.length > 0) return;
+  throw new ReviewWithoutContextError();
+}
+
+/**
+ * Thrown when an agent tries to complete a task whose human gate it skipped:
+ * either its own question is still pending (the human hasn't spoken), or its
+ * last question was withdrawn by the agent itself via cancel_prompt. Guards
+ * the exit side of review the way ReviewWithoutPromptError guards the entry.
+ */
+export class HumanGateSkippedError extends Error {
+  constructor(
+    message = 'This task cannot be marked done by you: your question to the human was never ' +
+      'answered (it is still pending, or you cancelled it yourself). Wait for the answer, ' +
+      're-ask with ask_human(...), or leave the task at status="doing" with a post_comment(...) ' +
+      'so the human can close it.',
+  ) {
+    super(message);
+    this.name = 'HumanGateSkippedError';
+  }
+}
+
+async function assertAgentMayComplete(ctx: Context, taskId: string): Promise<void> {
+  const caller = await findUserById(ctx.userId);
+  if (!isAgentCall(ctx, caller)) return;
+  const db = getDb();
+  const asked = await db
+    .select({
+      status: agentPrompts.status,
+      answeredByUserId: agentPrompts.answeredByUserId,
+      createdAt: agentPrompts.createdAt,
+    })
+    .from(agentPrompts)
+    .where(and(eq(agentPrompts.taskId, taskId), eq(agentPrompts.askedByUserId, ctx.userId)))
+    .orderBy(desc(agentPrompts.createdAt))
+    .limit(1);
+  const last = asked[0];
+  if (!last) return;
+  // Pending: the human hasn't answered. Cancelled by the asker itself: the
+  // withdrawal path (cancelPrompt) — either way, no human resolved the ask.
+  if (last.status === 'pending') throw new HumanGateSkippedError();
+  if (last.status === 'cancelled' && last.answeredByUserId === ctx.userId) {
+    throw new HumanGateSkippedError();
+  }
+}
+
 export async function updateTask(
   ctx: Context,
   id: string,
@@ -478,6 +657,19 @@ export async function updateTask(
 ): Promise<Task> {
   const parsed = updateTaskInputSchema.parse(patch);
   const existing = await assertAccessibleExists(ctx, id);
+
+  // Only the transition into review is guarded: a task already sitting in
+  // review can still be patched (title, notes, assignee) without re-proving
+  // it has a pending question.
+  if (parsed.status === 'review' && existing.status !== 'review') {
+    await assertMayEnterReview(ctx, id, parsed, existing);
+  }
+
+  // The mirror-image guard on the way out: an agent may not complete a task
+  // whose human ask it left pending or withdrew itself.
+  if (parsed.status === 'done' && existing.status !== 'done') {
+    await assertAgentMayComplete(ctx, id);
+  }
 
   const db = getDb();
   const ts = now();
@@ -491,12 +683,45 @@ export async function updateTask(
   if (parsed.reviewerId !== undefined) update.reviewerId = parsed.reviewerId;
   if (parsed.recurrence !== undefined) update.recurrence = parsed.recurrence;
 
+  if (parsed.recurrenceMode !== undefined) update.recurrenceMode = parsed.recurrenceMode;
+  if (parsed.progressPct !== undefined) update.progressPct = parsed.progressPct;
+
+  if (parsed.goalId !== undefined || parsed.milestoneId !== undefined) {
+    const nextGoalId = parsed.goalId !== undefined ? parsed.goalId : existing.goalId;
+    const nextMilestoneId =
+      parsed.milestoneId !== undefined
+        ? parsed.milestoneId
+        : // Re-linking or clearing the goal invalidates a milestone that wasn't
+          // re-stated — drop it rather than leave it dangling under the old goal.
+          nextGoalId === existing.goalId
+          ? existing.milestoneId
+          : null;
+    await assertValidGoalLink(ctx, nextGoalId, nextMilestoneId);
+    update.goalId = nextGoalId;
+    update.milestoneId = nextMilestoneId;
+  }
+
   if (parsed.status !== undefined) {
-    // Recurring tasks roll forward instead of completing: when marked 'done',
-    // bump dueAt by the recurrence interval and stay 'open'. This is what
-    // makes a heartbeat-style task work.
-    if (parsed.status === 'done' && existing.recurrence) {
-      const nextDue = advanceDueAt(existing.dueAt ?? ts, existing.recurrence);
+    // Checkbox recurring tasks roll forward instead of completing: when marked
+    // 'done', log the completion (so history survives the roll) then bump dueAt
+    // to the next occurrence and stay 'open'. Deliverable templates aren't
+    // completed directly (their spawned instances are), so they complete
+    // normally if ever ticked.
+    if (
+      parsed.status === 'done' &&
+      existing.recurrence &&
+      existing.recurrenceMode !== 'deliverable'
+    ) {
+      await db.insert(taskCompletions).values({
+        id: nanoid(12),
+        taskId: id,
+        userId: existing.userId,
+        completedByUserId: ctx.userId,
+        occurrenceAt: existing.dueAt ?? ts,
+        completedAt: ts,
+        source: existing.source,
+      });
+      const nextDue = nextOccurrence(existing.dueAt ?? ts, existing.recurrence);
       update.status = 'open';
       update.dueAt = nextDue;
       update.completedAt = null;

@@ -42,6 +42,19 @@ export function createLocalAdapter(): StorageAdapter {
       // Local has no notion of signed URLs; the web layer streams instead.
       return null;
     },
+    async getSignedUploadUrl() {
+      // Nothing to presign against — callers on a local store already have the
+      // filesystem, so attach_file is the path here.
+      return null;
+    },
+    async head(key) {
+      try {
+        const st = await fs.stat(absKey(root, key));
+        return { sizeBytes: st.size };
+      } catch {
+        return null;
+      }
+    },
     async delete(key) {
       const abs = absKey(root, key);
       await fs.rm(abs, { force: true });

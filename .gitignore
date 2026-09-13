@@ -10,5 +10,13 @@ coverage
 .vercel
 .claude/
 
-# Local file-attachment storage (production uses S3 via GETSHIT_STORAGE=s3)
+# Local file-attachment storage (production uses S3 via GETSHIT_STORAGE=s3).
+# The cwd varies by entry point — web dev server, core scripts, repo-root tsx —
+# so the same `data/files` tree lands in three places.
 packages/web/data/
+packages/core/data/
+/data/
+
+# Syncthing conflict copies (this repo syncs across machines)
+.sync-conflict-archive/
+*.sync-conflict-*

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidRecurrence } from './recurrence.js';
 
 export const taskStatusSchema = z.enum([
   'open',
@@ -17,14 +18,14 @@ export const assigneeKindSchema = z.enum(['person', 'agent']);
 export const idSchema = z.string().min(1).max(64);
 
 /**
- * Recurrence rule. Accepts: `<n>m`, `<n>h`, `<n>d`, `<n>w`, `<n>mo`.
- * Examples: `4h` (every 4 hours), `1d` (daily), `1w` (weekly), `1mo` (monthly).
- * `null` means non-recurring.
+ * Recurrence rule. Accepts intervals (`<n>m|h|d|w|mo`, e.g. `4h`, `1d`, `1w`,
+ * `1mo`) and weekday rules (`weekdays`, or a list like `mon,wed,fri`). `null`
+ * means non-recurring. See recurrence.ts for parsing / next-occurrence logic.
  */
 export const recurrenceSchema = z
   .string()
-  .regex(/^[1-9][0-9]*(m|h|d|w|mo)$/, 'Invalid recurrence (e.g. 4h, 1d, 1w, 1mo)')
-  .max(20);
+  .max(30)
+  .refine(isValidRecurrence, 'Invalid recurrence (e.g. 1d, 1w, weekdays, mon,wed,fri)');
 
 export const createTaskInputSchema = z.object({
   title: z.string().min(1).max(500),
@@ -39,6 +40,10 @@ export const createTaskInputSchema = z.object({
   assigneeId: idSchema.nullable().optional(),
   reviewerId: idSchema.nullable().optional(),
   recurrence: recurrenceSchema.nullable().optional(),
+  recurrenceMode: z.enum(['checkbox', 'deliverable']).optional(),
+  goalId: idSchema.nullable().optional(),
+  milestoneId: idSchema.nullable().optional(),
+  progressPct: z.number().int().min(0).max(100).nullable().optional(),
   tagIds: z.array(idSchema).optional(),
 });
 export type CreateTaskInput = z.infer<typeof createTaskInputSchema>;
@@ -54,6 +59,10 @@ export const updateTaskInputSchema = z
     assigneeId: idSchema.nullable(),
     reviewerId: idSchema.nullable(),
     recurrence: recurrenceSchema.nullable(),
+    recurrenceMode: z.enum(['checkbox', 'deliverable']),
+    goalId: idSchema.nullable(),
+    milestoneId: idSchema.nullable(),
+    progressPct: z.number().int().min(0).max(100).nullable(),
   })
   .partial();
 export type UpdateTaskInput = z.infer<typeof updateTaskInputSchema>;
@@ -68,6 +77,13 @@ export const listTasksFilterSchema = z
     assigneeId: idSchema.nullable().optional(),
     reviewerId: idSchema.nullable().optional(),
     tagId: idSchema.optional(),
+    /**
+     * Search the whole accessible tree instead of one level. Ignored when
+     * `parentId` names a specific parent — that stays an explicit
+     * direct-children query. Use with `parentId: null` (or omitted) to turn
+     * "roots of my view" into "every task I can reach, at any depth".
+     */
+    deep: z.boolean().optional(),
   })
   .default({});
 export type ListTasksFilter = z.infer<typeof listTasksFilterSchema>;

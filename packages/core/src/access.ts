@@ -10,61 +10,282 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * The one wording for "the row is there, you just can't reach it". Shared by
+ * {@link NotSharedError} and get_task's `not_shared` response body so the two
+ * can never drift — an agent must read the same sentence whichever tool it
+ * happened to call.
+ *
+ * Built from one template rather than written twice: brain notes hit the exact
+ * same failure and must not end up with a second, subtly different sentence.
+ */
+function notSharedMessage(noun: 'task' | 'note'): string {
+  return (
+    `This ${noun} exists but is not shared with you. ${NOT_MISSING_CLAUSE} ` +
+    'Ask its owner to share it, or an admin to read it for you.'
+  );
+}
+
+/**
+ * The load-bearing half of every "not shared" sentence — the clause that stops
+ * an agent recreating a row that is already there. Hoisted out of
+ * {@link notSharedMessage} rather than repeated, because the scratchpad
+ * variant below CANNOT be generated from that template: scratchpad entries
+ * have no share mechanism at all, so "ask its owner to share it" would be a
+ * remedy that does not exist. A template that produces a false instruction is
+ * worse than a second sentence; a shared clause keeps the part that matters
+ * from drifting anyway.
+ */
+const NOT_MISSING_CLAUSE = 'It is not missing — do not recreate it.';
+
+export const NOT_SHARED_MESSAGE = notSharedMessage('task');
+export const NOT_SHARED_NOTE_MESSAGE = notSharedMessage('note');
+
+/**
+ * Same failure, a third object type over: the scratchpad entry exists and
+ * belongs to somebody else. Worded separately because the task/note remedy is
+ * inapplicable here — see {@link NOT_MISSING_CLAUSE}.
+ */
+export const NOT_SHARED_SCRATCH_MESSAGE =
+  `This scratchpad entry exists but belongs to another user. ${NOT_MISSING_CLAUSE} ` +
+  'Only its owner or a workspace admin can read, file or dismiss it.';
+
+/**
+ * The row exists; this caller has no access to it.
+ *
+ * Deliberately a *subclass* of NotFoundError: every existing `instanceof
+ * NotFoundError` handler (web server actions, the files route's 404 mapping,
+ * `getNote`'s null-swallow) keeps behaving exactly as before, so this is a
+ * refinement of the message rather than a new failure mode callers must learn.
+ * Only the MCP error layer, which checks for it first, says anything new.
+ */
+export class NotSharedError extends NotFoundError {
+  constructor(public readonly taskId: string) {
+    super(taskId);
+    this.name = 'NotSharedError';
+    this.message = `Task ${taskId} not shared — ${NOT_SHARED_MESSAGE}`;
+  }
+}
+
+/**
+ * Same failure, one object type over: the brain note exists and this caller
+ * cannot reach it.
+ *
+ * A *subclass of NotSharedError*, not a sibling, and that is the load-bearing
+ * choice. Both MCP transports map the not_shared case with a single
+ * `err instanceof NotSharedError` check placed above the NotFoundError check;
+ * a sibling class would have needed that ordering rediscovered and re-asserted
+ * in two more places, which is precisely the per-call-site drift this whole
+ * card exists to remove. `taskId` is inherited and carries the *note* id here —
+ * read `noteId` instead.
+ */
+export class NotSharedNoteError extends NotSharedError {
+  constructor(public readonly noteId: string) {
+    super(noteId);
+    this.name = 'NotSharedNoteError';
+    this.message = `Note ${noteId} not shared — ${NOT_SHARED_NOTE_MESSAGE}`;
+  }
+}
+
+/**
+ * Third object type, same rule. A *subclass of NotSharedError* for exactly the
+ * reason {@link NotSharedNoteError} is: both MCP transports already test
+ * `err instanceof NotSharedError` ahead of NotFoundError, so this needs no
+ * third branch in either of them and cannot be missed by one and caught by the
+ * other. `taskId` is inherited and carries the *scratch entry* id here — read
+ * `entryId` instead.
+ */
+export class NotSharedScratchError extends NotSharedError {
+  constructor(public readonly entryId: string) {
+    super(entryId);
+    this.name = 'NotSharedScratchError';
+    this.message = `Scratch entry ${entryId} not shared — ${NOT_SHARED_SCRATCH_MESSAGE}`;
+  }
+}
+
 export class ForbiddenError extends Error {
-  constructor(id: string) {
-    super(`Task ${id} requires owner permission`);
+  // `noun` defaults to 'Task' so every pre-existing call site reads exactly as
+  // before. It exists because this error is now thrown for comment ids and
+  // scratch-entry ids too, and "Task <a comment id> requires owner permission"
+  // is wrong on the noun — the same residual NotFoundError still carries.
+  constructor(id: string, noun = 'Task') {
+    super(`${noun} ${id} requires owner permission`);
     this.name = 'ForbiddenError';
   }
 }
 
 /**
- * Returns task IDs accessible to ctx.userId — owned tasks plus the descendant
- * closure of every `task_shares` row for the user. One round-trip via a
- * recursive CTE.
+ * THE access rule, in one place. Every task/note query in the codebase builds
+ * its visibility from this fragment — never hand-roll the CTE again.
+ *
+ * A user reaches a task if they are its owner, hold a `task_shares` row for
+ * it, are its assignee, or are its reviewer — plus, transitively, everything
+ * under any of those. Ancestors are NOT reachable: being assigned one leaf
+ * does not open up the rest of the owner's tree, it surfaces that leaf (and
+ * its subtasks) as a root of your view.
+ *
+ * Assignee/reviewer access is *derived*, not stored: reassigning a task
+ * revokes the old assignee immediately, with no share rows to clean up.
+ *
+ * COORDINATOR SCOPE: a user with `users.is_admin` reaches every task. This is
+ * what makes a coordinator (chief-of-staff agent, operator) able to *write* to
+ * any task, not just see it in an admin dashboard. Without it, admin-only
+ * read tools like `office_pulse` could surface a task that `update_task` /
+ * `create_comment` then rejected with NotFound — the split that stalled a
+ * human answer for four days. Expressed as an EXISTS against `users` so it
+ * costs no extra round-trip and every caller of this fragment (tasks and
+ * notes, reads and writes) inherits it automatically.
+ *
+ * Emits the `roots` and `<name>` CTE bodies, without the `WITH RECURSIVE`
+ * keyword, so callers can append further CTEs after it.
+ */
+export function accessibleTasksCte(userId: string, name = 'accessible') {
+  const n = sql.raw(name);
+  return sql`
+    roots(id) AS (
+      SELECT id FROM tasks WHERE user_id = ${userId}
+      UNION
+      SELECT task_id FROM task_shares WHERE user_id = ${userId}
+      UNION
+      SELECT id FROM tasks WHERE assignee_id = ${userId}
+      UNION
+      SELECT id FROM tasks WHERE reviewer_id = ${userId}
+      UNION
+      SELECT id FROM tasks
+       WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = ${userId} AND u.is_admin = 1)
+    ),
+    ${n}(id) AS (
+      SELECT id FROM roots
+      UNION
+      SELECT t.id FROM tasks t JOIN ${n} a ON t.parent_id = a.id
+    )`;
+}
+
+/**
+ * Returns task IDs accessible to ctx.userId. One round-trip via a recursive
+ * CTE. See {@link accessibleTasksCte} for the rule.
  */
 export async function getAccessibleTaskIds(ctx: Context): Promise<string[]> {
   const db = getDb();
   const rows = await db.all<{ id: string }>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    )
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
     SELECT DISTINCT id FROM accessible
   `);
   return rows.map((r) => r.id);
 }
 
 /**
- * Asserts that `id` is accessible to ctx.userId (owned or shared), returns
- * the row. Throws NotFoundError otherwise — same error shape callers already
- * handle, so a non-accessible id looks the same as a non-existent one.
+ * Asserts that `id` is accessible to ctx.userId, returns the row.
+ *
+ * Throws {@link NotSharedError} when the row exists but this caller cannot
+ * reach it, and plain {@link NotFoundError} when there is no such row. Both
+ * are NotFoundError to `instanceof`, so callers that only care "the read
+ * failed" are unaffected; the MCP layer keys on the subclass to tell an agent
+ * *which* failure it hit. Same reasoning as {@link taskVisibility}: the
+ * distinction is only ever computed for an id the caller already handed us, so
+ * it leaks nothing that guessing ids could exploit.
+ *
+ * Still one round-trip — the existence check and the access check share the CTE.
  */
 export async function assertAccessibleExists(ctx: Context, id: string): Promise<Task> {
   const db = getDb();
   const rows = await db.all<Record<string, unknown>>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    )
-    SELECT t.* FROM tasks t
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
+    SELECT t.*, (t.id IN (SELECT id FROM accessible)) AS __accessible
+      FROM tasks t
      WHERE t.id = ${id}
-       AND t.id IN (SELECT id FROM accessible)
   `);
   const row = rows[0];
   if (!row) throw new NotFoundError(id);
+  if (!row['__accessible']) throw new NotSharedError(id);
   return rowToTask(row);
+}
+
+/** Why a task read came back empty. See {@link taskVisibility}. */
+export type TaskVisibility =
+  /** Accessible — a normal read will return it. */
+  | 'visible'
+  /** The row exists, but this user cannot reach it. */
+  | 'hidden'
+  /** No such id anywhere in the table. */
+  | 'missing';
+
+/**
+ * Distinguish "you can't see this" from "this does not exist".
+ *
+ * Every read path deliberately collapses both cases to null/NotFound so that a
+ * probe can't be used to enumerate other people's task ids. That is right for
+ * the security boundary and wrong for the agent reading the answer: a bare null
+ * is indistinguishable from a deleted task, so an agent sweeping a tree it is
+ * only partially shared into concludes the missing pieces were never created —
+ * and then "fixes" that by creating duplicates. That failure mode was observed
+ * twice: a coordinator sweep nearly filed ~20 false goal-chain violations, and
+ * `list_tasks(assigneeId=me)` reading `[]` made an agent believe it was idle.
+ *
+ * So the distinction is computed only where a *caller who already holds the id*
+ * asks for it explicitly. Knowing that an id you were handed exists leaks
+ * nothing you did not already have; guessing ids is still uniformly opaque
+ * because every other path keeps returning NotFound.
+ *
+ * One round-trip: the existence check and the access check share the CTE.
+ */
+export async function taskVisibility(ctx: Context, id: string): Promise<TaskVisibility> {
+  const db = getDb();
+  const rows = await db.all<{ visible: number }>(sql`
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
+    SELECT (t.id IN (SELECT id FROM accessible)) AS visible
+      FROM tasks t
+     WHERE t.id = ${id}
+  `);
+  const row = rows[0];
+  if (!row) return 'missing';
+  return row.visible ? 'visible' : 'hidden';
+}
+
+/**
+ * The COLLECTION half of the not_shared rule — for tools whose answer is a
+ * list, not a row.
+ *
+ * `assertAccessibleExists` protects tools whose *subject* is one object: they
+ * fail, so there is an error to name. A list tool cannot fail that way — it
+ * answers `[]`, and `[]` is the SUCCESS shape. `list_tasks(parentId=X)` gave
+ * one answer to three different worlds:
+ *
+ * ```
+ *   parentId = a task that exists, is not shared, and HAS children   ->  []
+ *   parentId = an id that was never real                             ->  []
+ *   parentId = a task I own that genuinely has no children           ->  []
+ * ```
+ *
+ * The middle and last rows are honest. The first is the exact wrong conclusion
+ * this whole card exists to stop — worse than `not_found: Task X not found`,
+ * because it does not even report a failure: it reports *"here are the
+ * children: none."* An agent reads that as "the subtree is empty" and fills it.
+ *
+ * Call this only AFTER the query has come back EMPTY. That ordering is
+ * load-bearing, not an optimisation:
+ *
+ *  - Ancestors are not reachable (see {@link accessibleTasksCte}), so a caller
+ *    assigned a single child of someone else's task legitimately gets rows back
+ *    from `list_tasks(parentId=<that hidden parent>)` today. Guarding on the
+ *    *argument* would turn that working query into an error. Guarding on the
+ *    *empty result* cannot: every call that returns rows today still does.
+ *  - The extra round-trip is then paid only on the answer that was about to be
+ *    uninformative anyway.
+ *
+ * A `missing` id is deliberately left alone: it keeps returning `[]`. The
+ * defect being fixed is "not shared read as not there", and after this the two
+ * are distinguishable. Making an absent filter id throw would also change the
+ * contract for every caller that lists the children of a just-deleted task,
+ * which is a different question and not this one.
+ */
+export async function assertFilterIdNotHidden(ctx: Context, id: string): Promise<void> {
+  if ((await taskVisibility(ctx, id)) === 'hidden') throw new NotSharedError(id);
+}
+
+/** Note-side mirror of {@link assertFilterIdNotHidden}. Same empty-result-only contract. */
+export async function assertNoteFilterIdNotHidden(ctx: Context, id: string): Promise<void> {
+  if ((await noteVisibility(ctx, id)) === 'hidden') throw new NotSharedNoteError(id);
 }
 
 /**
@@ -94,16 +315,7 @@ export async function assertOwnedExists(ctx: Context, id: string): Promise<Task>
 export async function getAccessibleNoteIds(ctx: Context): Promise<string[]> {
   const db = getDb();
   const rows = await db.all<{ id: string }>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    )
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
     SELECT id FROM brain_notes
      WHERE (scope_task_id IS NULL AND user_id = ${ctx.userId})
         OR scope_task_id IN (SELECT id FROM accessible)
@@ -111,30 +323,54 @@ export async function getAccessibleNoteIds(ctx: Context): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
+/**
+ * Note-side mirror of {@link assertAccessibleExists}.
+ *
+ * Throws {@link NotSharedNoteError} when the note exists but this caller cannot
+ * reach it, and plain {@link NotFoundError} when there is no such row.
+ *
+ * The old form filtered on accessibility *inside the WHERE clause*, so both
+ * cases produced zero rows and it was structurally incapable of telling them
+ * apart — the same defect get_task was fixed for, one object type over. The
+ * accessibility predicate is now a selected column instead, which keeps this to
+ * one round-trip while making the two cases distinguishable.
+ */
 export async function assertAccessibleNoteExists(
   ctx: Context,
   id: string,
 ): Promise<BrainNote> {
   const db = getDb();
   const rows = await db.all<Record<string, unknown>>(sql`
-    WITH RECURSIVE roots(id) AS (
-      SELECT id FROM tasks WHERE user_id = ${ctx.userId}
-      UNION
-      SELECT task_id FROM task_shares WHERE user_id = ${ctx.userId}
-    ),
-    accessible(id) AS (
-      SELECT id FROM roots
-      UNION
-      SELECT t.id FROM tasks t JOIN accessible a ON t.parent_id = a.id
-    )
-    SELECT * FROM brain_notes
-     WHERE id = ${id}
-       AND ((scope_task_id IS NULL AND user_id = ${ctx.userId})
-            OR scope_task_id IN (SELECT id FROM accessible))
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
+    SELECT n.*,
+           ((n.scope_task_id IS NULL AND n.user_id = ${ctx.userId})
+            OR n.scope_task_id IN (SELECT id FROM accessible)) AS __accessible
+      FROM brain_notes n
+     WHERE n.id = ${id}
   `);
   const row = rows[0];
   if (!row) throw new NotFoundError(id);
+  if (!row['__accessible']) throw new NotSharedNoteError(id);
   return rowToBrainNote(row);
+}
+
+/**
+ * Why a note read came back empty. Note-side mirror of {@link taskVisibility},
+ * and the same reasoning applies about what it does and does not leak: it is
+ * only ever computed for an id the caller already handed us.
+ */
+export async function noteVisibility(ctx: Context, id: string): Promise<TaskVisibility> {
+  const db = getDb();
+  const rows = await db.all<{ visible: number }>(sql`
+    WITH RECURSIVE ${accessibleTasksCte(ctx.userId)}
+    SELECT ((n.scope_task_id IS NULL AND n.user_id = ${ctx.userId})
+            OR n.scope_task_id IN (SELECT id FROM accessible)) AS visible
+      FROM brain_notes n
+     WHERE n.id = ${id}
+  `);
+  const row = rows[0];
+  if (!row) return 'missing';
+  return row.visible ? 'visible' : 'hidden';
 }
 
 function rowToBrainNote(r: Record<string, unknown>): BrainNote {
@@ -170,6 +406,11 @@ function rowToTask(r: Record<string, unknown>): Task {
     assigneeId: (r['assignee_id'] as string | null) ?? null,
     reviewerId: (r['reviewer_id'] as string | null) ?? null,
     recurrence: (r['recurrence'] as string | null) ?? null,
+    recurrenceMode: (r['recurrence_mode'] as Task['recurrenceMode']) ?? 'checkbox',
+    goalId: (r['goal_id'] as string | null) ?? null,
+    milestoneId: (r['milestone_id'] as string | null) ?? null,
+    progressPct: (r['progress_pct'] as number | null) ?? null,
+    occurrenceDate: (r['occurrence_date'] as number | null) ?? null,
     priority: (r['priority'] as number | null) ?? null,
     createdAt: r['created_at'] as number,
     updatedAt: r['updated_at'] as number,

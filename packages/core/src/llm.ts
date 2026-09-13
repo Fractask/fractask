@@ -127,3 +127,62 @@ export async function* streamChat(opts: {
     if (delta) yield delta;
   }
 }
+
+/**
+ * First model whose provider has a key configured. The simple frontend runs
+ * its own AI (the staff manager) on the host's keys and bills per token, so
+ * it must never hard-fail on a missing provider when the other one is there.
+ */
+export function pickAvailableModel(preferred?: string | null): ModelOption | null {
+  const avail = availableProviders();
+  const first = preferred ? findModel(preferred) : null;
+  if (first && avail[first.provider]) return first;
+  return MODELS.find((m) => avail[m.provider]) ?? null;
+}
+
+export type GenerateUsage = { inputTokens: number; outputTokens: number };
+
+/**
+ * `generate` plus the provider's token counts — what the usage ledger bills.
+ * Same call shape as `generate`; `generate` itself is untouched.
+ */
+export async function generateWithUsage(opts: {
+  modelId: string;
+  system?: string;
+  user: string;
+  maxTokens?: number;
+}): Promise<{ text: string; usage: GenerateUsage; model: ModelOption }> {
+  const m = findModel(opts.modelId);
+  const maxTokens = opts.maxTokens ?? 2000;
+
+  if (m.provider === 'anthropic') {
+    const r = await getAnthropic().messages.create({
+      model: m.model,
+      max_tokens: maxTokens,
+      ...(opts.system ? { system: opts.system } : {}),
+      messages: [{ role: 'user', content: opts.user }],
+    });
+    return {
+      text: r.content.map((b) => (b.type === 'text' ? b.text : '')).join(''),
+      usage: { inputTokens: r.usage.input_tokens, outputTokens: r.usage.output_tokens },
+      model: m,
+    };
+  }
+
+  const r = await getOpenAI().chat.completions.create({
+    model: m.model,
+    max_completion_tokens: maxTokens,
+    messages: [
+      ...(opts.system ? [{ role: 'system' as const, content: opts.system }] : []),
+      { role: 'user' as const, content: opts.user },
+    ],
+  });
+  return {
+    text: r.choices[0]?.message?.content ?? '',
+    usage: {
+      inputTokens: r.usage?.prompt_tokens ?? 0,
+      outputTokens: r.usage?.completion_tokens ?? 0,
+    },
+    model: m,
+  };
+}
