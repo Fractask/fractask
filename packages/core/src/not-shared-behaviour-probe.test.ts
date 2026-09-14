@@ -21,6 +21,7 @@ import {
   DEFERRED,
   PROBES,
   PROBE_TASK_TITLE,
+  PROBE_COMMENT_BODY,
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
   type Row,
@@ -229,6 +230,16 @@ describe('WRITE-SAFETY — the one control that reports what the run DID, not wh
     assert.ok(v.reason.includes(PROBE_TASK_TITLE), 'the reason must carry the greppable probe title');
   });
 
+  it('names the COMMENT marker too — a stray comment is the write nothing else would surface', () => {
+    // A stray create leaves a row in a tree and a stray attach leaves a file
+    // on a card. A stray comment leaves neither: it is a paragraph in someone
+    // else's thread, and the body text is the only handle on it.
+    const v = decide({ ...prodToday(), rows: [writeRow('post_comment', true)] });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.deepEqual(v.landedWrites, ['post_comment']);
+    assert.ok(v.reason.includes(PROBE_COMMENT_BODY), 'the reason must carry the greppable comment body');
+  });
+
   it('outranks the SUBJECT control — "this run did something" beats "this run measured nothing"', () => {
     // Both down. Every other INCONCLUSIVE is a methodology note; this one is
     // an alarm, and burying it under one would report damage as a caveat.
@@ -341,9 +352,31 @@ describe('the probed set', () => {
     // The WRITE-SAFETY control is only as wide as this flag: a write probe
     // added without it is watched by nothing.
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
-    assert.deepEqual(writes, ['attach_file', 'create_task', 'update_task']);
+    assert.deepEqual(writes, ['attach_file', 'create_task', 'post_comment', 'update_task']);
     for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
       assert.ok(!PROBES.find((p) => p.tool === readOnly)!.write, `${readOnly} is a read and must not be flagged`);
+    }
+  });
+
+  it("covers post_comment — the LAST tool the fix brief names, and the one the repo's own suite was already bitten by", () => {
+    // The card records `focus.test.ts:404` failing with `NotFoundError: Task
+    // … not found` where the cause was a bot commenting on a task it had no
+    // share for. That harm is a post_comment harm, and post_comment was the
+    // one named tool still unprobed a day after create_task landed.
+    const p = PROBES.find((x) => x.tool === 'post_comment');
+    assert.ok(p, 'post_comment must be probed');
+    assert.equal(p.args(NOT_SHARED_TASK_ID).taskId, NOT_SHARED_TASK_ID, 'the subject must be the taskId');
+    assert.equal(p.args(NEVER_REAL_TASK_ID).body, PROBE_COMMENT_BODY, 'and the body must be the greppable marker');
+    assert.match(PROBE_COMMENT_BODY, /never be posted/i);
+  });
+
+  it('covers every tool the fix brief names by hand — the list is the card\'s, not mine', () => {
+    // "return the not_shared shape … from attach_file, post_comment,
+    // update_task, create_task(parentId=…) and friends." Pinned as a SET so a
+    // future edit cannot quietly drop one: a named tool leaving the probe is
+    // the failure this card is about, one level up.
+    for (const named of ['attach_file', 'post_comment', 'update_task', 'create_task']) {
+      assert.ok(PROBES.some((p) => p.tool === named), `${named} is named in the fix brief and must be probed`);
     }
   });
 

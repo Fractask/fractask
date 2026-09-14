@@ -64,7 +64,10 @@
  * nothing is changed even in the world where it succeeds. `attach_file` sends
  * five bytes. `create_task` is sent with a `parentId` that is one of the two
  * subjects, and `createTask` runs `assertAccessibleExists(parentId)` BEFORE the
- * insert (`tasks.ts`), so neither subject can reach the write.
+ * insert (`tasks.ts`), so neither subject can reach the write. `post_comment`
+ * is the same shape one level down, and the one whose stray write would be
+ * hardest to find: it adds no row to any tree and no file to any card, only a
+ * paragraph in a thread — hence `PROBE_COMMENT_BODY`.
  *
  * Every sentence above is a claim about THIS tree's source. The probe runs
  * against PROD, whose build this tree cannot see — that is the entire premise
@@ -162,6 +165,14 @@ export function classify(isError: boolean, text: string): Klass {
 export const PROBE_TASK_TITLE = 'NOT-SHARED PROBE — must never be created (not-shared-behaviour-probe)';
 
 /**
+ * The same idea for the `post_comment` probe. A stray comment is the quietest
+ * of the write probes' failure modes — it leaves no new row in any tree and no
+ * attachment on any card, just a paragraph in somebody else's thread — so the
+ * marker is the only thing that would make it findable afterwards.
+ */
+export const PROBE_COMMENT_BODY = 'NOT-SHARED PROBE — must never be posted (not-shared-behaviour-probe)';
+
+/**
  * One probed tool: a name plus how it names the subject in its own arguments.
  *
  * `write: true` marks a call that would MUTATE if it were not refused. Those
@@ -203,6 +214,21 @@ export const PROBES: Probe[] = [
     tool: 'create_task',
     args: (id) => ({ title: PROBE_TASK_TITLE, parentId: id }),
     note: 'WRITE — the create path the card names; not_found here reads as "go ahead, make another"',
+    write: true,
+  },
+  // `post_comment` — the LAST of the four tools this card's fix brief names by
+  // hand, and the only one whose harm the repo had already recorded in its own
+  // suite. The card's §"it also bites inside the repo's own suite" is exactly
+  // this call: `focus.test.ts:404` failing with `NotFoundError: Task … not
+  // found` where the real cause was *a bot commenting on a task it has no
+  // share for*. The error text sent that diagnosis in the wrong direction, and
+  // the tool that produced it was still unprobed on 2026-09-14 22:4xZ.
+  // Measured by hand against prod first, then encoded: NOT_SHARED / NOT_FOUND,
+  // both legs refused.
+  {
+    tool: 'post_comment',
+    args: (id) => ({ taskId: id, body: PROBE_COMMENT_BODY }),
+    note: "WRITE — the in-repo harm's own call path (focus.test.ts:404)",
     write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
@@ -300,7 +326,8 @@ export function decide(args: {
       status: 'INCONCLUSIVE',
       reason:
         `a WRITE probe was not refused — ${landedWrites.join(', ')} answered without an error, so this run may have ` +
-        `MUTATED the target. Look for a task titled "${PROBE_TASK_TITLE}" and for attachments named ` +
+        `MUTATED the target. Look for a task titled "${PROBE_TASK_TITLE}", for a comment body starting ` +
+        `"${PROBE_COMMENT_BODY}", and for attachments named ` +
         '"not-shared-probe.txt" before trusting anything else here',
       ...base,
     };
