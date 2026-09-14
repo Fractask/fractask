@@ -122,11 +122,32 @@ export type Klass = 'NOT_SHARED' | 'NOT_FOUND' | 'EMPTY_SUCCESS' | 'OTHER_OK' | 
  * question this card asks is what an agent READS, and an agent reads the
  * string. `EMPTY_SUCCESS` is called out separately from `OTHER_OK` because it
  * is the shape that does not announce itself as a failure.
+ *
+ * ⚠️ **The marker is read in a POSITION, not anywhere in the body — earned
+ * 2026-09-14 21:5xZ, by accident, against this card itself.** The first
+ * version tested `/\bnot_shared\b/` over the whole text. An ordinary
+ * `update_task` on `Tx5g85uLq96D` then classified as `NOT_SHARED`: the call
+ * SUCCEEDED and echoed the task, whose description is 6 KB of prose about the
+ * string `not_shared`. A substring census of a marker counts how often the
+ * corpus TALKS about the marker.
+ *
+ * That is not cosmetic here, because the SUBJECT control is exactly this
+ * predicate: had `NOT_SHARED_TASK_ID` ever been shared with the runner *and*
+ * mentioned the token — which any card about this bug does — the control would
+ * have read ✅ off a full, readable task body, and every row beneath it would
+ * have been a measurement of the wrong kind of row. The two shapes prod
+ * actually emits are an `"error": "not_shared"` field (get_task returns it as
+ * DATA, http 200, isError false) and a `not_shared: …` error prefix. Both are
+ * positions. Prose is not.
  */
 export function classify(isError: boolean, text: string): Klass {
   const t = text.trim();
-  if (/\bnot_shared\b/.test(t)) return 'NOT_SHARED';
-  if (/\bnot_found\b/.test(t) || /\bnot found\b/i.test(t)) return 'NOT_FOUND';
+  /** The marker as a VERDICT: an `"error": "<marker>"` field, or the error-message prefix. */
+  const asVerdict = (marker: string): boolean =>
+    new RegExp(`"error"\\s*:\\s*"${marker}"`).test(t) || new RegExp(`^${marker}\\b`).test(t);
+
+  if (asVerdict('not_shared') || (isError && /\bnot_shared\b/.test(t))) return 'NOT_SHARED';
+  if (asVerdict('not_found') || (isError && (/\bnot_found\b/.test(t) || /\bnot found\b/i.test(t)))) return 'NOT_FOUND';
   if (isError) return 'OTHER_ERR';
   if (t === '[]' || t === '{}' || t === 'null' || t === '') return 'EMPTY_SUCCESS';
   return 'OTHER_OK';

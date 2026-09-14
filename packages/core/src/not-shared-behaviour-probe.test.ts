@@ -105,6 +105,42 @@ describe('classify — what an agent actually READS', () => {
   it('is not fooled by the word "shared" on its own', () => {
     assert.equal(classify(false, '{"note":"this task is shared with three people"}'), 'OTHER_OK');
   });
+
+  it('is not fooled by a SUCCESS body that merely TALKS about not_shared — the real reading that earned this', () => {
+    // Observed 2026-09-14 21:5xZ: update_task on THIS card succeeded, echoed
+    // the task, and the echo classified NOT_SHARED — because the description
+    // is 6 KB of prose about the token. A substring census of a marker counts
+    // how often the corpus mentions the marker.
+    const echo = JSON.stringify({
+      id: 'Tx5g85uLq96D',
+      title: 'Report not_shared as not_shared across all MCP tools, not just get_task',
+      description: 'list_tasks(parentId=X) answers [] where it should answer not_shared, and not_found is worse still',
+    });
+    assert.equal(classify(false, echo), 'OTHER_OK');
+  });
+
+  it('still reads the two shapes prod ACTUALLY emits — verbatim wire text, not a paraphrase', () => {
+    // If the tightening above also silenced these, the probe would report a
+    // green world. Captured off the live endpoint the same run.
+    assert.equal(
+      classify(
+        false,
+        '{\n  "id": "TfmR7QJFqluo",\n  "error": "not_shared",\n  "message": "This task exists but is not shared with you. It is not missing — do not recreate it."\n}',
+      ),
+      'NOT_SHARED',
+    );
+    assert.equal(
+      classify(true, 'not_shared: Task TfmR7QJFqluo not shared — This task exists but is not shared with you.'),
+      'NOT_SHARED',
+    );
+    assert.equal(classify(true, 'not_found: Task zzzNoSuch9XyZ not found'), 'NOT_FOUND');
+  });
+
+  it('does not let a mid-sentence marker in an ERROR body go unread — an error IS a verdict', () => {
+    // The position rule tightens the SUCCESS side only. An error body is
+    // already a refusal, so the marker anywhere in it is the refusal's reason.
+    assert.equal(classify(true, 'failed to load parent: not_shared'), 'NOT_SHARED');
+  });
 });
 
 describe('decide — the reading', () => {
