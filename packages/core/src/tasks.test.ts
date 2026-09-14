@@ -51,6 +51,7 @@ import {
 } from './attachments.js';
 import { reportShipped } from './focus.js';
 import { mcpErrorText } from './mcp-errors.js';
+import { findTool } from './mcp-tools.js';
 import { setAgentRules } from './settings.js';
 import { taskShares, users } from './schema.js';
 import type { Context } from './context.js';
@@ -1654,6 +1655,49 @@ describe('the COLLECTION partition — a hidden filter id answered with the SUCC
   it('parentId=null / "top of my view" is untouched', async () => {
     const roots = await listTasks(ctx, { parentId: null });
     assert.ok(Array.isArray(roots), 'a null parent is not an id and must never be guarded');
+  });
+
+  // The DOCUMENTATION half, joined to the behaviour half inside ONE test.
+  //
+  // Every assertion above is about what the code DOES. The agent on the other
+  // end of the wire reads the tool DESCRIPTION — and this card's deploy marker
+  // matches on that same string, so a tool can be fully guarded, fully tested,
+  // and still invisible to the gauge that reports the fix as shipped.
+  // `search_notes` was exactly that for a day: guard at brain.ts:393, two cases
+  // in this very suite, and no sentence.
+  //
+  // The covered set is NOT hand-typed: each row earns its place by actually
+  // rejecting first. A tool that stops throwing drops out of the documentation
+  // assertion instead of silently passing it.
+  it('every collection tool that THROWS not_shared also SAYS so in its description', async () => {
+    const probes: Array<[string, () => Promise<unknown>]> = [
+      ['list_tasks', () => listTasks(ctx, { parentId: hiddenParent })],
+      ['list_notes', () => listBrainNotes(ctx, { scopeTaskId: hiddenScope })],
+      ['search_notes', () => searchBrainNotes(ctx, 'anything', { scopeTaskId: hiddenScope })],
+    ];
+    const undocumented: string[] = [];
+    for (const [name, probe] of probes) {
+      const err = await probe().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      assert.ok(
+        err instanceof NotSharedError || err instanceof NotSharedNoteError,
+        `${name}: expected a not_shared rejection to license the description check, got ${String(err)}`,
+      );
+      const tool = findTool(name);
+      assert.ok(tool, `${name}: not in TOOLS`);
+      if (!tool.description.includes('not_shared')) undocumented.push(name);
+    }
+    assert.deepEqual(undocumented, [], `guarded but undocumented: ${undocumented.join(', ')}`);
+
+    // NEG-CTL — the matcher CAN report a tool as undocumented. `move_task` is a
+    // write path carrying no such sentence, so the empty list above is a fact
+    // about these three tools, not "every description contains the string".
+    assert.ok(
+      !findTool('move_task')!.description.includes('not_shared'),
+      'NEG-CTL broke: move_task now mentions not_shared, so this matcher proves nothing',
+    );
   });
 });
 

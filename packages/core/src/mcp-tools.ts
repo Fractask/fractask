@@ -1497,6 +1497,7 @@ export const TOOLS: ToolDef[] = [
       'Substring search across brain note titles and body text (the plain-text mirror of the editor content).',
       'Scoped to notes the user can read. Pass scopeTaskId to restrict to one entity or project, null/"root" to restrict to personal notes.',
       'Returns `[{ id, title, icon, snippet, updatedAt }]` ordered by recency.',
+      'If scopeTaskId names a task that EXISTS and is not shared with you, this returns `not_shared` rather than an empty list — an empty list would read as "nothing in that scope matches".',
     ].join(' '),
     inputSchemaZod: searchNotesZod,
     inputSchemaJson: {
