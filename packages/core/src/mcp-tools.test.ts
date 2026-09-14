@@ -1058,3 +1058,162 @@ describe('ask_human returns who the question was addressed to', () => {
     assert.match(d, /addressedToUserId/);
   });
 });
+
+/**
+ * The COVERAGE denominator for `not_shared` — derived, not hand-typed.
+ *
+ * This card's own sentence is *"add a test per tool, not one shared test: the
+ * current single-site guarantee is exactly what made this look covered."* The
+ * suites that answer it (`NotSharedError — every write path…` and friends in
+ * tasks.test.ts) are themselves a hand-typed list of `it()` cases. Both times a
+ * tool has been found missing from them — `report_shipped` on 2026-09-14, and
+ * `share_task` in the same hour as this block — it was found by a human running
+ * a join by hand, once. A tool added tomorrow that takes a task id sits outside
+ * that list with nothing red, which is the defect one level up from the one the
+ * card was opened for.
+ *
+ * Two things this census does that a hand join does not:
+ *
+ *  - **It is TRANSITIVE.** `attach_file` — the tool whose `not_found` answer
+ *    cost the wrong conclusion on 2026-09-03 and opened this card — does not
+ *    call an access assert itself. `createAttachment` calls
+ *    `resolveAttachmentParent`, and that calls `assertAccessibleExists`. A
+ *    direct-call scan drops the card's own motivating tool out of its
+ *    denominator, and prints a smaller, greener number for it.
+ *  - **It keys on what a case EXERCISES, not on what it is NAMED.** A census
+ *    over `it()` titles reads 9 of 32; the identifiers actually invoked inside
+ *    a `not_shared` describe block are the coverage.
+ *
+ * Source-level, deliberately. A behavioural test cannot see a tool that was
+ * never written down.
+ */
+const coreSrcDir = path.dirname(fileURLToPath(import.meta.url));
+
+/** The helpers that turn a hidden row into a NotShared* answer. */
+const ACCESS_ASSERTS = [
+  'assertAccessibleExists',
+  'assertAccessibleNoteExists',
+  'assertFilterIdNotHidden',
+  'assertNoteFilterIdNotHidden',
+  'assertOwnedExists',
+];
+
+type FnNode = { file: string; calls: Set<string> };
+
+/** Every top-level function in core/src, with the identifiers it invokes. */
+function coreCallGraph(): Map<string, FnNode> {
+  const graph = new Map<string, FnNode>();
+  for (const file of fs.readdirSync(coreSrcDir)) {
+    if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
+    const lines = fs.readFileSync(path.join(coreSrcDir, file), 'utf8').split('\n');
+    const starts: { name: string; line: number }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const decl =
+        /^(?:export )?(?:async )?function ([A-Za-z0-9_]+)/.exec(lines[i] as string) ??
+        /^(?:export )?const ([A-Za-z0-9_]+) = (?:async )?\(/.exec(lines[i] as string);
+      if (decl) starts.push({ name: decl[1] as string, line: i });
+    }
+    for (let k = 0; k < starts.length; k++) {
+      const end = k + 1 < starts.length ? (starts[k + 1] as { line: number }).line : lines.length;
+      const body = lines.slice((starts[k] as { line: number }).line, end).join('\n');
+      const calls = new Set(
+        [...body.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].map((mm) => mm[1] as string),
+      );
+      graph.set((starts[k] as { name: string }).name, { file, calls });
+    }
+  }
+  return graph;
+}
+
+/** Can `name` reach an access assert, directly or through core callees? */
+function reachesAccessAssert(graph: Map<string, FnNode>, name: string, seen = new Set<string>()) {
+  if (seen.has(name)) return false;
+  seen.add(name);
+  const node = graph.get(name);
+  if (!node) return false;
+  if (ACCESS_ASSERTS.some((a) => node.calls.has(a))) return true;
+  for (const callee of node.calls) {
+    if (callee !== name && graph.has(callee) && reachesAccessAssert(graph, callee, seen)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Identifiers invoked inside any describe() block that is about not_shared. */
+function notSharedCoveredIdentifiers(): Set<string> {
+  const covered = new Set<string>();
+  let blocks = 0;
+  for (const file of fs.readdirSync(coreSrcDir)) {
+    if (!file.endsWith('.test.ts')) continue;
+    const lines = fs.readFileSync(path.join(coreSrcDir, file), 'utf8').split('\n');
+    const starts: number[] = [];
+    for (let i = 0; i < lines.length; i++) if (/^describe\(/.test(lines[i] as string)) starts.push(i);
+    for (let k = 0; k < starts.length; k++) {
+      const end = k + 1 < starts.length ? (starts[k + 1] as number) : lines.length;
+      const body = lines.slice(starts[k] as number, end).join('\n');
+      if (!/NotShared|not_shared/.test(body)) continue;
+      blocks++;
+      for (const mm of body.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) covered.add(mm[1] as string);
+    }
+  }
+  // Population precondition for the OTHER set: zero not_shared blocks would make
+  // every tool below read as uncovered, which is loud — but zero blocks with a
+  // non-empty `covered` set is impossible, so this is the honest place to say it.
+  assert.ok(blocks > 0, 'found no not_shared describe blocks at all — the test scan is broken');
+  return covered;
+}
+
+describe('not_shared coverage — the denominator is derived from TOOLS, not typed', () => {
+  const graph = coreCallGraph();
+  const covered = notSharedCoveredIdentifiers();
+
+  /** Tools whose handler can produce a NotShared* answer. */
+  const atRisk = TOOLS.filter((t) =>
+    [...String(t.handler).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].some((mm) =>
+      reachesAccessAssert(graph, mm[1] as string),
+    ),
+  ).map((t) => t.name);
+
+  // Guard one: an empty census makes every per-tool case below vacuous and this
+  // whole suite green over nothing.
+  it('the census finds a non-empty set of at-risk tools', () => {
+    assert.ok(graph.size > 0, 'the call graph is empty — the source scan is broken');
+    assert.ok(atRisk.length > 0, 'no tool reaches an access assert — the census is broken');
+  });
+
+  // Guard two, the other direction: a census that SHRINKS also covers less while
+  // staying green. These are named as a floor, never as the denominator.
+  // `attach_file` is here because it is the tool this card was opened for AND
+  // because it is only reachable transitively — it is the case that fails first
+  // if the walk ever stops being transitive.
+  for (const known of ['attach_file', 'get_task', 'post_comment', 'update_task', 'share_task']) {
+    it(`the census still contains ${known}`, () => {
+      assert.ok(
+        atRisk.includes(known),
+        `${known} dropped out of the at-risk census. Census returned: ${atRisk.join(', ')}`,
+      );
+    });
+  }
+
+  for (const name of atRisk) {
+    it(`${name} is exercised by a not_shared case`, () => {
+      const handlerCalls = [
+        ...String(findTool(name)!.handler).matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g),
+      ].map((mm) => mm[1] as string);
+      const hit = handlerCalls.find((c) => reachesAccessAssert(graph, c) && covered.has(c));
+      assert.ok(
+        hit,
+        `${name} can answer not_shared and no not_shared case invokes its core function ` +
+          `(candidates: ${handlerCalls.filter((c) => reachesAccessAssert(graph, c)).join(', ')})`,
+      );
+    });
+  }
+
+  it('the control: both matchers can return the negative', () => {
+    // A tool that takes no id at all must NOT be in the at-risk census...
+    assert.ok(!atRisk.includes('search_users'), 'search_users should not be at risk');
+    // ...and an identifier no not_shared block mentions must NOT read as covered.
+    assert.ok(!covered.has('zzzNoSuchFunctionName'), 'the coverage matcher never returns false');
+  });
+});

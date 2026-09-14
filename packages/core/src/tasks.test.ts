@@ -50,6 +50,7 @@ import {
   listAttachmentsForNote,
 } from './attachments.js';
 import { reportShipped } from './focus.js';
+import { shareTaskWithEmail, shareTaskWithUserId } from './shares.js';
 import { mcpErrorText } from './mcp-errors.js';
 import { findTool } from './mcp-tools.js';
 import { setAgentRules } from './settings.js';
@@ -1009,6 +1010,40 @@ describe('NotSharedError — every write path answers like get_task does', () =>
   // assertExists turns this case red and nothing else in the file moves.
   it('report_shipped', () =>
     rejectsNotShared(() => reportShipped(ctx, { taskId: hidden, title: 'shipped' })));
+
+  // Added 2026-09-14, and it is the THIRD access helper — not a thirteenth call
+  // site of the first. Every case above reaches `assertAccessibleExists`; these
+  // reach `assertOwnedExists`, which answers the hidden case only because it
+  // *delegates* to it (access.ts:306) after failing its own owner lookup. That
+  // delegation is one early `throw new ForbiddenError` from turning every
+  // not-shared share attempt back into the wrong answer, and until now nothing
+  // pinned it. Found by deriving the tool set transitively rather than reading
+  // the `it()` titles — see not-shared-coverage.test.ts.
+  //
+  // Both legs, because they are two functions: shares.ts:150 and shares.ts:49.
+  // A repair to one leg of a paired guard is not a repair to the guard.
+  it('share_task — the userId leg', () =>
+    rejectsNotShared(() => shareTaskWithUserId(ctx, hidden, otherCtx.userId)));
+
+  it('share_task — the email leg', () =>
+    rejectsNotShared(() => shareTaskWithEmail(ctx, hidden, 'someone-else@example.com')));
+
+  // The discrimination that makes the two cases above meaningful: on a task the
+  // caller CAN see but does not own, assertOwnedExists must still answer
+  // forbidden. "You cannot see this" and "you can see it but may not do this"
+  // are different answers and neither may collapse into the other.
+  it('share_task on a visible-but-unowned task stays forbidden, not not_shared', async () => {
+    const theirs = await createTask(otherCtx, { title: 'assigned-to-me-not-mine' });
+    await updateTask(otherCtx, theirs.id, { assigneeId: ctx.userId });
+    await assert.rejects(
+      () => shareTaskWithUserId(ctx, theirs.id, otherCtx.userId),
+      (err: unknown) => {
+        assert.ok(err instanceof ForbiddenError, `expected ForbiddenError, got ${String(err)}`);
+        assert.ok(!(err instanceof NotSharedError), 'visible must not report as not_shared');
+        return true;
+      },
+    );
+  });
 
   // The half that stops this being a blanket relabel. If a genuinely absent id
   // started reporting `not_shared`, an agent would ask for access to a row that
