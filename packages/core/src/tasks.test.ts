@@ -49,6 +49,7 @@ import {
   listAttachments,
   listAttachmentsForNote,
 } from './attachments.js';
+import { reportShipped } from './focus.js';
 import { mcpErrorText } from './mcp-errors.js';
 import { setAgentRules } from './settings.js';
 import { taskShares, users } from './schema.js';
@@ -991,6 +992,22 @@ describe('NotSharedError — every write path answers like get_task does', () =>
     ));
 
   it('list_prompts', () => rejectsNotShared(() => listPromptsForTask(ctx, hidden)));
+
+  // Added 2026-09-14. This suite's header says "every write path", and for
+  // eleven days it enumerated eleven of them. `report_shipped` is a twelfth:
+  // it takes a `taskId`, it writes a focus_events row, and it was in no
+  // not_shared case in any file. Found by joining the live `tools/list` (32
+  // tools) against the core functions these blocks actually call — a census
+  // keyed on the test TITLES reads 9 of 32 and would have missed it, because a
+  // title census counts what a test is named, not what it exercises.
+  //
+  // It is not a bug: focus.ts:229 already calls assertAccessibleExists, so this
+  // block is green the moment it is written. That is the point the suite header
+  // above makes — a guard that is correct and unpinned is one refactor from the
+  // defect this card was opened for. Ablated: swapping that one call for
+  // assertExists turns this case red and nothing else in the file moves.
+  it('report_shipped', () =>
+    rejectsNotShared(() => reportShipped(ctx, { taskId: hidden, title: 'shipped' })));
 
   // The half that stops this being a blanket relabel. If a genuinely absent id
   // started reporting `not_shared`, an agent would ask for access to a row that
