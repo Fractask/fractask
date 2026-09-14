@@ -93,6 +93,12 @@ export const NOT_SHARED_TASK_ID = process.env.NOT_SHARED_TASK_ID || 'TfmR7QJFqlu
 /** An id that was never a row. */
 export const NEVER_REAL_TASK_ID = process.env.NEVER_REAL_TASK_ID || 'zzzNoSuch9XyZ';
 
+/** An id that was never a NOTE row — the never-real leg for any deferred note probe. */
+export const NEVER_REAL_NOTE_ID = process.env.NEVER_REAL_NOTE_ID || 'zzzNoNote9XyZ';
+
+/** Search term for the `search_notes` probe — any substring; the SCOPE is what is under test. */
+const NOTE_SEARCH_TERM = 'a';
+
 /** Five bytes, so the attach probe carries a real size/sha pair. */
 const PROBE_BYTES = 'probe';
 const PROBE_B64 = 'cHJvYmU=';
@@ -143,7 +149,48 @@ export const PROBES: Probe[] = [
     note: "this card's motivating tool",
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
+  // The NOTE surface. `scopeTaskId` IS a task id, so these two take the same
+  // subject pair as `list_tasks` — the rows are the right kind of row without
+  // needing a note subject at all. Added 2026-09-14 20:4xZ because the card
+  // asserted "same for list_notes / search_notes / get_note" from the CODE
+  // PATH and nothing had ever called them.
+  { tool: 'list_notes', args: (id) => ({ scopeTaskId: id }), note: 'COLLECTION — note surface, scoped by TASK id' },
+  {
+    tool: 'search_notes',
+    args: (id) => ({ query: NOTE_SEARCH_TERM, scopeTaskId: id }),
+    note: 'COLLECTION — share-scoped search',
+  },
 ];
+
+/**
+ * Probed only when a subject exists for it — and PRINTED either way.
+ *
+ * `get_note(id)` takes a NOTE id. The task subjects above are not notes, so
+ * calling it with them measures two never-real rows and prints a `CONFLATES`
+ * that is an artifact of the subject, not a finding about the build. (It does:
+ * both answer `null`. That reading was discarded, not published.)
+ *
+ * A share-scoped caller cannot DISCOVER a note it may not read — that is what
+ * share-scoping means — so this box cannot mint the subject itself. The
+ * deferral is dischargeable rather than permanent: set `NOT_SHARED_NOTE_ID` to
+ * a note that exists and is not shared with the runner and the row is probed
+ * like any other.
+ */
+export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
+  {
+    tool: 'get_note',
+    reason: 'needs a NOT-SHARED *note* subject; a task id is not a note id, and a share-scoped caller cannot find one',
+    envVar: 'NOT_SHARED_NOTE_ID',
+  },
+];
+
+/**
+ * A scope this caller CAN read, holding at least one note. Without it the two
+ * `[]` readings from the note tools are a fact about the READER — a note
+ * surface that answers `[]` to everything would print the same rows. Defaults
+ * to the website-builder venture, which holds `_yV8UcWq4-0_`.
+ */
+export const READABLE_SCOPE_TASK_ID = process.env.READABLE_SCOPE_TASK_ID || '0kOf10V9thDz';
 
 export type Row = { tool: string; note: string; notShared: Klass; neverReal: Klass; distinguishes: boolean };
 
@@ -159,6 +206,12 @@ export function decide(args: {
   subjectControlOk: boolean;
   authControlSameAsReal: boolean;
   classifierControlOk: boolean;
+  /**
+   * Optional and defaulted to `true` so existing callers are unchanged: did a
+   * scope this caller CAN read return at least one note? Only meaningful when
+   * a note tool is in `rows`.
+   */
+  scopeReaderControlOk?: boolean;
 }): Verdict {
   const conflating = args.rows.filter((r) => !r.distinguishes).map((r) => r.tool);
   const base = { conflating };
@@ -187,6 +240,19 @@ export function decide(args: {
     return {
       status: 'INCONCLUSIVE',
       reason: 'the classifier control did not return OTHER — its verdicts are not readings',
+      ...base,
+    };
+  }
+  // Only asked when a note tool is actually in the set: a note row's `[]` is
+  // evidence about share-scoping only if the same reader returns rows for a
+  // scope this caller can see. A dead note surface prints identical rows.
+  const probesNotes = args.rows.some((r) => r.tool === 'list_notes' || r.tool === 'search_notes');
+  if (probesNotes && args.scopeReaderControlOk === false) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        `the note reader returned nothing for ${READABLE_SCOPE_TASK_ID}, a scope this caller CAN read — ` +
+        'the note rows below are a fact about the reader, not about share-scoping',
       ...base,
     };
   }
@@ -255,6 +321,22 @@ export async function callTool(
   return { httpStatus: res.status, isError, text, klass: classify(isError, text) };
 }
 
+/**
+ * How many rows a collection answer carries. `-1` means "not a readable list"
+ * — an error, or a body that is not an array. Kept distinct from `0` on
+ * purpose: a control that failed to execute and a control that executed and
+ * found nothing are different facts, and only the second is about the world.
+ */
+export function countRows(a: Answer): number {
+  if (a.isError) return -1;
+  try {
+    const parsed: unknown = JSON.parse(a.text);
+    return Array.isArray(parsed) ? parsed.length : -1;
+  } catch {
+    return -1;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* cli                                                                 */
 /* ------------------------------------------------------------------ */
@@ -272,8 +354,15 @@ async function main(): Promise<number> {
 
   const rows: Row[] = [];
   let authControlSameAsReal = false;
+  // SCOPE-READER control: a scope this caller CAN read must yield a note.
+  let scopeReaderNotes = -1;
+  let scopeReaderControlOk = true;
 
   if (subjectControlOk) {
+    const readable = await callTool(url, auth, 'list_notes', { scopeTaskId: READABLE_SCOPE_TASK_ID });
+    scopeReaderNotes = countRows(readable);
+    scopeReaderControlOk = scopeReaderNotes > 0;
+
     for (const p of PROBES) {
       const notShared = await callTool(url, auth, p.tool, p.args(NOT_SHARED_TASK_ID));
       const neverReal = await callTool(url, auth, p.tool, p.args(NEVER_REAL_TASK_ID));
@@ -295,13 +384,36 @@ async function main(): Promise<number> {
       authControlSameAsReal =
         ctlShared.klass === witness.notShared && ctlReal.klass === witness.neverReal;
     }
+
+    // Deferred rows, probed only once their own subject is supplied.
+    for (const d of DEFERRED) {
+      const subjectId = process.env[d.envVar];
+      if (!subjectId) continue;
+      const notShared = await callTool(url, auth, d.tool, { id: subjectId });
+      const neverReal = await callTool(url, auth, d.tool, { id: NEVER_REAL_NOTE_ID });
+      rows.push({
+        tool: d.tool,
+        note: `subject from ${d.envVar}`,
+        notShared: notShared.klass,
+        neverReal: neverReal.klass,
+        distinguishes: notShared.klass !== neverReal.klass,
+      });
+    }
   }
 
-  const verdict = decide({ rows, subjectControlOk, authControlSameAsReal, classifierControlOk });
+  const verdict = decide({ rows, subjectControlOk, authControlSameAsReal, classifierControlOk, scopeReaderControlOk });
   const code = verdict.status === 'DISTINGUISHES' ? 0 : verdict.status === 'CONFLATES' ? 1 : 2;
 
+  const deferred = DEFERRED.filter((d) => !process.env[d.envVar]);
+
   if (asJson) {
-    console.log(JSON.stringify({ url, NOT_SHARED_TASK_ID, NEVER_REAL_TASK_ID, rows, verdict }, null, 2));
+    console.log(
+      JSON.stringify(
+        { url, NOT_SHARED_TASK_ID, NEVER_REAL_TASK_ID, READABLE_SCOPE_TASK_ID, scopeReaderNotes, rows, deferred, verdict },
+        null,
+        2,
+      ),
+    );
     return code;
   }
 
@@ -319,6 +431,14 @@ async function main(): Promise<number> {
         : '   — not run (subject control failed first)'),
   );
   console.log(`  CLASS CTL   a body with neither marker → OTHER_OK` + (classifierControlOk ? '   ✅' : '   ⛔'));
+  console.log(
+    `  SCOPE CTL   list_notes(${READABLE_SCOPE_TASK_ID}) → ${scopeReaderNotes < 0 ? 'not a readable list' : `${scopeReaderNotes} note(s)`}` +
+      (subjectControlOk
+        ? scopeReaderControlOk
+          ? '   ✅ the note reader returns rows it CAN see'
+          : '   ⛔ the note rows below are about the READER'
+        : '   — not run (subject control failed first)'),
+  );
   console.log('');
   if (rows.length) {
     console.log(`  tool               not-shared subject   never-real subject   verdict`);
@@ -327,6 +447,16 @@ async function main(): Promise<number> {
         `  ${r.tool.padEnd(18)} ${r.notShared.padEnd(20)} ${r.neverReal.padEnd(20)} ` +
           `${r.distinguishes ? '✅ distinguishes' : '🔴 CONFLATES'}   ${r.note}`,
       );
+    }
+    console.log('');
+  }
+  // Printed, never dropped: a row removed from the findings list silently
+  // reads as a row that passed.
+  if (deferred.length) {
+    console.log(`  NOT PROBED — ${deferred.length} tool(s), each with the subject it is waiting for:`);
+    for (const d of deferred) {
+      console.log(`  ${d.tool.padEnd(18)} ${d.reason}`);
+      console.log(`  ${''.padEnd(18)} discharge by setting ${d.envVar}=<id>`);
     }
     console.log('');
   }
