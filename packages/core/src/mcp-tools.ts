@@ -531,6 +531,7 @@ export const TOOLS: ToolDef[] = [
       'Default response keeps payloads small: each row is `{ id, title, dueAt }`. Use `fields` to opt into more (e.g. `["title","status","dueAt","assigneeId"]`); `id` is always present.',
       'Returns rows ordered by sibling position.',
       'An empty result is a real answer, not an error — but if parentId names a task that EXISTS and is not shared with you, this returns `not_shared` instead of `[]`, because "here are the children: none" is a worse lie than "not found". Treat that as "ask for access", never as "the subtree is empty, recreate it".',
+      '⚠️ COUNTING: every row here is share-scoped, and the `not_shared` guard above fires only on an EMPTY result. A NON-EMPTY list silently omits rows you cannot see — no error, no marker, nothing to notice. So `list_tasks(...).length` is a count of what is shared with YOU, not a count of the world: never publish it as a denominator ("N tasks are in review") without saying whose view it is. Measured 2026-09-14: `list_tasks(status="review")` answered 11 where the workspace held 12.',
     ].join(' '),
     inputSchemaZod: listTasksZod,
     inputSchemaJson: {

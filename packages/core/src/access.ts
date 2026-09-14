@@ -278,6 +278,29 @@ export async function taskVisibility(ctx: Context, id: string): Promise<TaskVisi
  * are distinguishable. Making an absent filter id throw would also change the
  * contract for every caller that lists the children of a just-deleted task,
  * which is a different question and not this one.
+ *
+ * ## ⚠️ What this guard does NOT cover, stated where it will be read
+ *
+ * It fires on an EMPTY result. A **filtered-but-non-empty** list stays silent —
+ * by design, per the first bullet above — so the share-scoped omission is still
+ * invisible on every call that returns rows. That is not a hole to plug here:
+ * the point of share-scoping is that the caller cannot see the row, so there is
+ * no row-level signal to emit. It is a hole in how the RESULT gets read.
+ *
+ * Measured 2026-09-14, by the agent writing this card's own census:
+ *
+ * ```
+ *   list_tasks(status="review") through the MCP    11 rows
+ *   select … from tasks where status='review'      12 rows
+ *   omitted: one task with assigneeId = null, never shared with the caller
+ * ```
+ *
+ * The 11 was then published as a denominator — *"11 cards sit in review"* — as
+ * the argument for a decision. Same shape as the `[]` defect above and one step
+ * worse to catch: `[]` at least looks like nothing, whereas a short list looks
+ * like an answer. The mitigation is documentation at the call site, not code:
+ * see the COUNTING paragraph on `list_tasks` in `mcp-tools.ts`, pinned by
+ * "a NON-EMPTY share-scoped list omits rows silently" in `tasks.test.ts`.
  */
 export async function assertFilterIdNotHidden(ctx: Context, id: string): Promise<void> {
   if ((await taskVisibility(ctx, id)) === 'hidden') throw new NotSharedError(id);

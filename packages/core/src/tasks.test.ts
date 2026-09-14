@@ -1734,6 +1734,66 @@ describe('the COLLECTION partition — a hidden filter id answered with the SUCC
       'NEG-CTL broke: move_task now mentions not_shared, so this matcher proves nothing',
     );
   });
+
+  // ── The half the guard above does NOT cover, pinned so it cannot be forgotten ──
+  //
+  // `assertFilterIdNotHidden` fires only on an EMPTY result — deliberately, so
+  // a caller assigned one child of a hidden parent keeps working. The cost is
+  // that a NON-EMPTY list omits unshared rows in total silence: no error, no
+  // marker, and the answer looks complete.
+  //
+  // This is not hypothetical and it is not a future agent's problem. On
+  // 2026-09-14 the agent working this very card called
+  // `list_tasks(status="review")`, got 11 rows against a workspace holding 12,
+  // and published the 11 as a denominator — inside the same receipt that
+  // described the `[]` defect. A short list reads as an answer; `[]` at least
+  // reads as nothing. There is no row-level fix (the point of share-scoping is
+  // that the row is invisible), so the mitigation is a sentence at the call
+  // site — and a sentence with no test is a sentence that gets edited away.
+  it('a NON-EMPTY share-scoped list omits rows silently — no error, no marker', async () => {
+    // Both carry a description because `status: "review"` is refused without
+    // context ("Review needs a question") — an unrelated rule, but it means the
+    // fixture cannot be built by title alone.
+    const mine = await createTask(ctx, {
+      title: 'scoped-count-mine',
+      status: 'review',
+      description: 'in my view',
+    });
+    const theirs = await createTask(otherCtx, {
+      title: 'scoped-count-theirs',
+      status: 'review',
+      description: 'never shared with ctx',
+    });
+
+    const mineRows = await listTasks(ctx, { status: 'review', deep: true });
+    const theirRows = await listTasks(otherCtx, { status: 'review', deep: true });
+    const ids = (rows: Array<{ id: string }>) => rows.map((r) => r.id);
+
+    // POS-CTL — the reader is working: each caller does see their own row.
+    assert.ok(ids(mineRows).includes(mine.id), 'POS-CTL: my own review task must be listed');
+    assert.ok(ids(theirRows).includes(theirs.id), "POS-CTL: the other caller sees their own row");
+
+    // The defect, in the success shape: a row exists, is `review`, and is
+    // absent from my list — and the call resolved rather than throwing.
+    assert.equal(await taskVisibility(ctx, theirs.id), 'hidden', 'fixture really is hidden from me');
+    assert.ok(!ids(mineRows).includes(theirs.id), 'the unshared review task is omitted');
+    assert.ok(mineRows.length > 0, 'and the omission happens on a NON-EMPTY list, so no guard fires');
+  });
+
+  it('list_tasks DOCUMENTS that its count is share-scoped', () => {
+    const desc = findTool('list_tasks')!.description;
+    assert.match(desc, /COUNTING/, 'the counting caveat must survive description edits');
+    assert.match(desc, /share-scoped/);
+    assert.match(desc, /not a count of the world/);
+
+    // NEG-CTL — the matcher can miss. `get_task` answers about ONE row, so the
+    // share-scoped-count caveat does not belong there and must not be present;
+    // if it ever is, this assertion stops proving anything about list_tasks.
+    assert.ok(
+      !findTool('get_task')!.description.includes('not a count of the world'),
+      'NEG-CTL broke: get_task now carries the counting caveat, so this matcher proves nothing',
+    );
+  });
 });
 
 describe('the EXPENSIVE-HAPPY-PATH partition — the three tools every suite skipped', () => {
