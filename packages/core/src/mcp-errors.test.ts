@@ -106,19 +106,75 @@ describe('ForbiddenError — the noun', () => {
  * class to the product mapped it in neither. A behavioural test on this module
  * cannot see a transport that has stopped calling it.
  */
-describe('both transports route through the ONE table', () => {
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-  const transports = [
-    'packages/mcp/src/index.ts',
-    'packages/web/src/app/api/mcp/route.ts',
-  ];
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
-  for (const rel of transports) {
+/**
+ * Every file that dispatches a TOOL — i.e. the complete set of places an agent's
+ * call can turn into an error string.
+ *
+ * Derived by scanning the source tree, NOT hand-typed, and that is the whole
+ * point. The suite below used to iterate a literal two-entry list. Both entries
+ * were right, so it was green — and a third transport added tomorrow would have
+ * been outside its denominator, mapped by nobody, with nothing red. That is the
+ * same defect one level up from the one this card was opened for: a guarantee
+ * held at the call sites somebody remembered to enumerate, read as a guarantee
+ * about the class.
+ *
+ * The discriminator is `tool.handler(` — invoking a TOOLS entry's handler is
+ * what makes a file a transport, and it is the line immediately above the catch
+ * block that has to classify the error.
+ */
+function findToolDispatchers(): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.next') continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      // Test files are excluded: a suite calling tool.handler() is exercising a
+      // tool, not shipping an error string to an agent.
+      if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
+      if (fs.readFileSync(full, 'utf8').includes('tool.handler(')) {
+        found.push(path.relative(repoRoot, full));
+      }
+    }
+  };
+  for (const pkg of fs.readdirSync(path.join(repoRoot, 'packages'))) {
+    const src = path.join(repoRoot, 'packages', pkg, 'src');
+    if (fs.existsSync(src)) walk(src);
+  }
+  return found.sort();
+}
+
+describe('every tool dispatcher routes through the ONE table', () => {
+  const dispatchers = findToolDispatchers();
+
+  // Population precondition, asserted before any per-row verdict: a scan that
+  // found nothing would make every `for` below vacuous and the suite green.
+  it('the census finds a non-empty set of dispatchers', () => {
+    assert.ok(dispatchers.length > 0, 'found no tool dispatchers at all — the scan is broken');
+  });
+
+  // Floor, in the other direction: the derived set shrinking to one is ALSO a
+  // way for this suite to cover less while staying green, so the two known
+  // transports are named and must still be in it. Named as a floor, never as
+  // the denominator.
+  for (const known of ['packages/mcp/src/index.ts', 'packages/web/src/app/api/mcp/route.ts']) {
+    it(`the census still contains the known transport ${known}`, () => {
+      assert.ok(
+        dispatchers.includes(known),
+        `${known} dropped out of the census — either it moved, or the scan stopped matching it. ` +
+          `Census returned: ${dispatchers.join(', ')}`,
+      );
+    });
+  }
+
+  for (const rel of dispatchers) {
     it(`${rel} calls mcpErrorText and defines no private copy`, () => {
-      const file = path.join(repoRoot, rel);
-      // If this file moves, fail loudly rather than passing over an empty read.
-      assert.ok(fs.existsSync(file), `transport not found at ${file} — fix this path`);
-      const src = fs.readFileSync(file, 'utf8');
+      const src = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
       assert.ok(src.includes('mcpErrorText('), `${rel} never calls mcpErrorText`);
       assert.ok(
         !/function\s+errorText\s*\(/.test(src),
@@ -127,10 +183,12 @@ describe('both transports route through the ONE table', () => {
     });
   }
 
-  it('the control: this assertion can fail', () => {
-    // A file that certainly does NOT call mcpErrorText, so the matcher above is
-    // shown to be capable of returning false.
+  it('the control: both assertions above can fail', () => {
+    // access.ts is a file that certainly does NOT call mcpErrorText, so the
+    // matcher is shown to be capable of returning false — and it is equally
+    // certainly not in the dispatcher census, so the scan is shown to exclude.
     const src = fs.readFileSync(path.join(repoRoot, 'packages/core/src/access.ts'), 'utf8');
     assert.ok(!src.includes('mcpErrorText('));
+    assert.ok(!dispatchers.includes('packages/core/src/access.ts'));
   });
 });
