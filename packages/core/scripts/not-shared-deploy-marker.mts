@@ -6,6 +6,28 @@
  * serves — so the marker is: how many of prod's tool descriptions carry the
  * string, against how many of this tree's do.
  *
+ * ## ⚠️ 2026-09-14 18:4xZ — that "so" is a PROXY, and it was measured false
+ *
+ * This script reads what a tool SAYS. The card is about what a tool ANSWERS.
+ * Two objects, and on prod today they disagree:
+ *
+ * ```
+ *   ANSWERS not_shared (measured, subject TfmR7QJFqluo)   6 of 7 probed tools
+ *   SAYS    not_shared (this script, tools/list)          1 of 32
+ * ```
+ *
+ * So this marker's red is true — prod's descriptions ARE behind — but for 27
+ * hours it was quoted as if it meant the *behaviour* had not shipped, and the
+ * behaviour had. Do not read a NOT_DEPLOYED here as "an agent can still be
+ * told not_found for a task that exists": that question is answered by
+ * `npm run not-shared-behaviour` (`not-shared-behaviour-probe.mts`), which
+ * calls the tools instead of reading their prose. Run and quote BOTH; neither
+ * substitutes for the other.
+ *
+ * The one thing the behaviour probe finds still broken on prod is the
+ * COLLECTION half — `list_tasks(parentId=<not shared>)` answers `[]`, which is
+ * the success shape. That is what this deploy is actually still carrying.
+ *
  * ## Why this is a file and not four lines of shell
  *
  * The census was re-typed by hand every hour for a day, and the figure it
