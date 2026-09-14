@@ -173,6 +173,17 @@ export const PROBE_TASK_TITLE = 'NOT-SHARED PROBE — must never be created (not
 export const PROBE_COMMENT_BODY = 'NOT-SHARED PROBE — must never be posted (not-shared-behaviour-probe)';
 
 /**
+ * And for the `create_note` probe. A stray NOTE is the hardest of the write
+ * probes to find after the fact: it is not a row in the task tree, so no
+ * `list_tasks` walk sees it, and the only enumerator is `list_notes` — which is
+ * one of the three tools this card reports as CONFLATING, so on a scope the
+ * caller cannot read it answers `[]` either way. The marker is therefore the
+ * only handle, and it is why this row's cleanup path is named in the
+ * WRITE-SAFETY reason rather than left to the reader to work out.
+ */
+export const PROBE_NOTE_TITLE = 'NOT-SHARED PROBE — must never be created (not-shared-behaviour-probe, note)';
+
+/**
  * One probed tool: a name plus how it names the subject in its own arguments.
  *
  * `write: true` marks a call that would MUTATE if it were not refused. Those
@@ -229,6 +240,25 @@ export const PROBES: Probe[] = [
     tool: 'post_comment',
     args: (id) => ({ taskId: id, body: PROBE_COMMENT_BODY }),
     note: "WRITE — the in-repo harm's own call path (focus.test.ts:404)",
+    write: true,
+  },
+  // `create_note(scopeTaskId=…)` — the NOTE surface's write path, and the one
+  // row on this table whose subject argument the three CONFLATING tools also
+  // take. Measured by hand against prod on 2026-09-14 23:4xZ before it was
+  // encoded here (`LbTfUj_liBQd`'s mechanism: take the reading, THEN write it
+  // down): NOT_SHARED / NOT_FOUND, both legs refused, nothing created.
+  //
+  // It is worth a row of its own rather than being assumed from `create_task`
+  // because the two creates assert on DIFFERENT arguments — `parentId` is a
+  // parent task, `scopeTaskId` is a scope — and this card's whole history is
+  // call sites that were believed covered by a sibling's guarantee. The note
+  // surface is exactly where that belief has already failed once: the card
+  // asserted "same for list_notes / search_notes / get_note" from the code
+  // path, and when someone finally CALLED them two of the three were broken.
+  {
+    tool: 'create_note',
+    args: (id) => ({ title: PROBE_NOTE_TITLE, contentText: PROBE_NOTE_TITLE, scopeTaskId: id }),
+    note: 'WRITE — the note surface\'s create path; its scope arg is the same kind of id the 3 CONFLATING tools take',
     write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
@@ -327,7 +357,9 @@ export function decide(args: {
       reason:
         `a WRITE probe was not refused — ${landedWrites.join(', ')} answered without an error, so this run may have ` +
         `MUTATED the target. Look for a task titled "${PROBE_TASK_TITLE}", for a comment body starting ` +
-        `"${PROBE_COMMENT_BODY}", and for attachments named ` +
+        `"${PROBE_COMMENT_BODY}", for a NOTE titled "${PROBE_NOTE_TITLE}" (enumerable only via ` +
+        'list_notes(scopeTaskId=…), which CONFLATES — so check get_note on the id the call returned), ' +
+        'and for attachments named ' +
         '"not-shared-probe.txt" before trusting anything else here',
       ...base,
     };

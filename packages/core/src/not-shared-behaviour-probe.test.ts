@@ -22,6 +22,7 @@ import {
   PROBES,
   PROBE_TASK_TITLE,
   PROBE_COMMENT_BODY,
+  PROBE_NOTE_TITLE,
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
   type Row,
@@ -240,6 +241,18 @@ describe('WRITE-SAFETY — the one control that reports what the run DID, not wh
     assert.ok(v.reason.includes(PROBE_COMMENT_BODY), 'the reason must carry the greppable comment body');
   });
 
+  it('names the NOTE marker too, and says how to enumerate a stray note', () => {
+    // The stray note is the worst case of the four: the only enumerator is
+    // list_notes(scopeTaskId=…), and that is one of the three tools this card
+    // reports as CONFLATING — so on a scope the caller cannot read it answers
+    // [] whether the note is there or not. A reason that named the marker but
+    // not that trap would send the reader to a gauge that cannot see the row.
+    const v = decide({ ...prodToday(), rows: [writeRow('create_note', true)] });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.ok(v.reason.includes(PROBE_NOTE_TITLE), 'the reason must carry the greppable note title');
+    assert.ok(v.reason.includes('get_note'), 'and must point at the enumerator that actually works');
+  });
+
   it('outranks the SUBJECT control — "this run did something" beats "this run measured nothing"', () => {
     // Both down. Every other INCONCLUSIVE is a methodology note; this one is
     // an alarm, and burying it under one would report damage as a caveat.
@@ -352,7 +365,7 @@ describe('the probed set', () => {
     // The WRITE-SAFETY control is only as wide as this flag: a write probe
     // added without it is watched by nothing.
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
-    assert.deepEqual(writes, ['attach_file', 'create_task', 'post_comment', 'update_task']);
+    assert.deepEqual(writes, ['attach_file', 'create_note', 'create_task', 'post_comment', 'update_task']);
     for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
       assert.ok(!PROBES.find((p) => p.tool === readOnly)!.write, `${readOnly} is a read and must not be flagged`);
     }
@@ -390,6 +403,26 @@ describe('the probed set', () => {
       const p = PROBES.find((x) => x.tool === tool)!;
       assert.equal(p.args(NOT_SHARED_TASK_ID).scopeTaskId, NOT_SHARED_TASK_ID);
     }
+  });
+
+  it("covers create_note — the note surface's WRITE path, which no sibling row's guarantee covers", () => {
+    // `create_task` asserts on `parentId`; `create_note` asserts on
+    // `scopeTaskId`. Two different arguments, two different call sites, and
+    // this card exists because a single hand-written guarantee was read as
+    // covering the others. Measured against prod by hand on 2026-09-14 23:4xZ
+    // before this row was written: NOT_SHARED / NOT_FOUND, both refused.
+    const p = PROBES.find((x) => x.tool === 'create_note');
+    assert.ok(p, 'create_note must be probed');
+    assert.equal(p.args(NOT_SHARED_TASK_ID).scopeTaskId, NOT_SHARED_TASK_ID, 'the subject is the SCOPE arg');
+    assert.equal(p.args(NEVER_REAL_TASK_ID).title, PROBE_NOTE_TITLE, 'and the title must be the greppable marker');
+    assert.ok(p.write, 'it mutates if it is not refused, so WRITE-SAFETY must watch it');
+  });
+
+  it('gives the note probe its OWN marker, distinct from the task one', () => {
+    // A shared marker would make a stray note and a stray task grep alike,
+    // and they live in different places with different enumerators.
+    assert.notEqual(PROBE_NOTE_TITLE, PROBE_TASK_TITLE);
+    assert.match(PROBE_NOTE_TITLE, /never be created/i);
   });
 
   it('keeps get_note OUT of the probed set — a task id is not a note id', () => {
