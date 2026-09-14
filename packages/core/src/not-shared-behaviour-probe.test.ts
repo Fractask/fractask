@@ -20,6 +20,7 @@ import {
   decide,
   DEFERRED,
   PROBES,
+  PROBE_TASK_TITLE,
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
   type Row,
@@ -31,6 +32,13 @@ const row = (tool: string, notShared: Row['notShared'], neverReal: Row['neverRea
   notShared,
   neverReal,
   distinguishes: notShared !== neverReal,
+});
+
+/** A write probe row. `landed` = the call was NOT refused, i.e. it reached the mutation. */
+const writeRow = (tool: string, landed: boolean): Row => ({
+  ...row(tool, 'NOT_SHARED', 'NOT_FOUND'),
+  write: true,
+  landed,
 });
 
 /** Prod as measured 2026-09-14 18:4xZ: scalar tools live, the collection tool not. */
@@ -170,6 +178,61 @@ describe('decide — ablations: each control can take the finding away', () => {
   });
 });
 
+describe('WRITE-SAFETY — the one control that reports what the run DID, not what it read', () => {
+  it('a write probe that was not refused voids the run and names the tool', () => {
+    // A refusal is an error. A write probe answering WITHOUT one got past the
+    // access assert, which means the mutation happened.
+    const v = decide({ ...prodToday(), rows: [...prodToday().rows, writeRow('create_task', true)] });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.deepEqual(v.landedWrites, ['create_task']);
+    assert.match(v.reason, /may have\s+MUTATED|MUTATED/);
+  });
+
+  it('tells the reader what to go and look for, so the damage is findable', () => {
+    const v = decide({ ...prodToday(), rows: [writeRow('create_task', true)] });
+    assert.ok(v.reason.includes(PROBE_TASK_TITLE), 'the reason must carry the greppable probe title');
+  });
+
+  it('outranks the SUBJECT control — "this run did something" beats "this run measured nothing"', () => {
+    // Both down. Every other INCONCLUSIVE is a methodology note; this one is
+    // an alarm, and burying it under one would report damage as a caveat.
+    const v = decide({
+      ...prodToday(),
+      subjectControlOk: false,
+      rows: [...prodToday().rows, writeRow('attach_file', true)],
+    });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /WRITE probe was not refused/);
+  });
+
+  it('does NOT fire when every write probe was refused — the ordinary world', () => {
+    const v = decide({
+      ...prodToday(),
+      rows: [...prodToday().rows, writeRow('update_task', false), writeRow('create_task', false)],
+    });
+    assert.equal(v.status, 'CONFLATES');
+    assert.deepEqual(v.landedWrites, []);
+    assert.deepEqual(v.conflating, ['list_tasks']);
+  });
+
+  it('is scoped to WRITE rows — a read row cannot trip it', () => {
+    // Otherwise a read tool returning a body (which is its whole job) would
+    // void every run. A control that voids unrelated rows deletes findings.
+    const readLanded: Row = { ...row('list_comments', 'NOT_SHARED', 'NOT_FOUND'), landed: true };
+    const v = decide({ ...prodToday(), rows: [...prodToday().rows, readLanded] });
+    assert.equal(v.status, 'CONFLATES');
+    assert.deepEqual(v.landedWrites, []);
+  });
+
+  it('reports landedWrites on every verdict shape, so it is printable at zero', () => {
+    // A safety control only visible when it fires cannot be told apart from
+    // one that was never run.
+    for (const v of [decide(prodToday()), decide({ ...prodToday(), subjectControlOk: false })]) {
+      assert.deepEqual(v.landedWrites, []);
+    }
+  });
+});
+
 describe('the scope control is valid per INVOCATION, not per command', () => {
   it('does not void a run that probed no note tool — the control is not about those rows', () => {
     // prodToday() has no note row. A dead note reader says nothing about
@@ -221,6 +284,31 @@ describe('the probed set', () => {
 
   it('names its two subjects distinctly', () => {
     assert.notEqual(NOT_SHARED_TASK_ID, NEVER_REAL_TASK_ID);
+  });
+
+  it('covers the CREATE path the card\'s own fix brief names', () => {
+    // "return the not_shared shape from attach_file, post_comment,
+    // update_task, create_task(parentId=…) and friends" — create_task was the
+    // one named tool that had never been a row here.
+    const p = PROBES.find((x) => x.tool === 'create_task');
+    assert.ok(p, 'create_task must be probed');
+    assert.equal(p.args(NOT_SHARED_TASK_ID).parentId, NOT_SHARED_TASK_ID, 'the subject must be the PARENT id');
+  });
+
+  it('gives the create probe a greppable title — an anonymous stray write cannot be found', () => {
+    const p = PROBES.find((x) => x.tool === 'create_task')!;
+    assert.equal(p.args(NEVER_REAL_TASK_ID).title, PROBE_TASK_TITLE);
+    assert.match(PROBE_TASK_TITLE, /never be created/i);
+  });
+
+  it('flags every mutating probe as a write, and no read probe as one', () => {
+    // The WRITE-SAFETY control is only as wide as this flag: a write probe
+    // added without it is watched by nothing.
+    const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
+    assert.deepEqual(writes, ['attach_file', 'create_task', 'update_task']);
+    for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
+      assert.ok(!PROBES.find((p) => p.tool === readOnly)!.write, `${readOnly} is a read and must not be flagged`);
+    }
   });
 
   it('covers the NOTE surface — the card asserted it from the code path and nothing had called it', () => {

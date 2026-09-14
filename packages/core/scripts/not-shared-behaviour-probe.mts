@@ -58,13 +58,22 @@
  *    as OTHER. If the classifier cannot return anything but a verdict, its
  *    verdicts are not readings.
  *
- * ## Why the write probes are safe
+ * ## Why the write probes are safe — and why that is not left as an argument
  *
  * `update_task` is sent with an id and no fields — the access assert runs, and
  * nothing is changed even in the world where it succeeds. `attach_file` sends
- * five bytes. Both subjects are refused by construction, and the SUBJECT
- * control aborts the run before either is sent if that stops being true.
- * Nothing here can write to a task this caller can reach.
+ * five bytes. `create_task` is sent with a `parentId` that is one of the two
+ * subjects, and `createTask` runs `assertAccessibleExists(parentId)` BEFORE the
+ * insert (`tasks.ts`), so neither subject can reach the write.
+ *
+ * Every sentence above is a claim about THIS tree's source. The probe runs
+ * against PROD, whose build this tree cannot see — that is the entire premise
+ * of the card. So the safety is also MEASURED, by the WRITE-SAFETY control: a
+ * write probe that comes back as a non-error did not get refused, which means
+ * it may have changed the world. That is reported first and voids the run,
+ * because every other `INCONCLUSIVE` here says *"this run measured nothing"*
+ * and only this one says *"this run DID something."* A safety argument that
+ * cannot fail out loud is a comment.
  *
  * ## Exit codes
  *
@@ -123,8 +132,22 @@ export function classify(isError: boolean, text: string): Klass {
   return 'OTHER_OK';
 }
 
-/** One probed tool: a name plus how it names the subject in its own arguments. */
-export type Probe = { tool: string; args: (id: string) => Record<string, unknown>; note: string };
+/**
+ * A title no real card would carry, used by the `create_task` probe. If a
+ * build ever lets that probe through, the row it creates is greppable rather
+ * than anonymous — a write you cannot find afterwards is worse than one you
+ * can.
+ */
+export const PROBE_TASK_TITLE = 'NOT-SHARED PROBE — must never be created (not-shared-behaviour-probe)';
+
+/**
+ * One probed tool: a name plus how it names the subject in its own arguments.
+ *
+ * `write: true` marks a call that would MUTATE if it were not refused. Those
+ * rows are the ones the WRITE-SAFETY control watches: for a read probe a
+ * non-error answer is just an answer, but for a write probe it is a write.
+ */
+export type Probe = { tool: string; args: (id: string) => Record<string, unknown>; note: string; write?: boolean };
 
 /**
  * The probed set. Each row is a tool an agent reaches for when it is about to
@@ -135,7 +158,7 @@ export const PROBES: Probe[] = [
   { tool: 'list_comments', args: (id) => ({ taskId: id }), note: 'read' },
   { tool: 'list_prompts', args: (id) => ({ taskId: id }), note: 'read' },
   { tool: 'list_attachments', args: (id) => ({ taskId: id }), note: 'read' },
-  { tool: 'update_task', args: (id) => ({ id }), note: 'write, no fields — a pure access assert' },
+  { tool: 'update_task', args: (id) => ({ id }), note: 'write, no fields — a pure access assert', write: true },
   {
     tool: 'attach_file',
     args: (id) => ({
@@ -147,6 +170,19 @@ export const PROBES: Probe[] = [
       sha256: PROBE_SHA,
     }),
     note: "this card's motivating tool",
+    write: true,
+  },
+  // The CREATE path, named in this card's own fix brief as
+  // *"`create_task(parentId=…)` and friends"* and observed answering
+  // `not_shared` by hand on 2026-09-14 20:5xZ before it was ever a row here.
+  // It is the one probe where the do-not-recreate wording is load-bearing in
+  // the literal sense: `not_found` on a create path is an INVITATION to
+  // recreate a task that already exists.
+  {
+    tool: 'create_task',
+    args: (id) => ({ title: PROBE_TASK_TITLE, parentId: id }),
+    note: 'WRITE — the create path the card names; not_found here reads as "go ahead, make another"',
+    write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
   // The NOTE surface. `scopeTaskId` IS a task id, so these two take the same
@@ -192,12 +228,27 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  */
 export const READABLE_SCOPE_TASK_ID = process.env.READABLE_SCOPE_TASK_ID || '0kOf10V9thDz';
 
-export type Row = { tool: string; note: string; notShared: Klass; neverReal: Klass; distinguishes: boolean };
+export type Row = {
+  tool: string;
+  note: string;
+  notShared: Klass;
+  neverReal: Klass;
+  distinguishes: boolean;
+  /** Mirrors `Probe.write` — this call would have mutated had it not been refused. */
+  write?: boolean;
+  /**
+   * A write probe whose call came back as a NON-error, on either leg: it was
+   * not refused, so it may have landed. Only meaningful with `write`.
+   */
+  landed?: boolean;
+};
 
 export type Verdict = {
   status: 'DISTINGUISHES' | 'CONFLATES' | 'INCONCLUSIVE';
   reason: string;
   conflating: string[];
+  /** Write probes that were NOT refused. Non-empty means this run may have mutated prod. */
+  landedWrites: string[];
 };
 
 /** Decide from the rows plus every control reading. Pure, so tests can drive it. */
@@ -214,9 +265,26 @@ export function decide(args: {
   scopeReaderControlOk?: boolean;
 }): Verdict {
   const conflating = args.rows.filter((r) => !r.distinguishes).map((r) => r.tool);
-  const base = { conflating };
+  const landedWrites = args.rows.filter((r) => r.write && r.landed).map((r) => r.tool);
+  const base = { conflating, landedWrites };
 
-  // Ordered most-diagnostic first. A wrong subject makes every row below it a
+  // WRITE-SAFETY first, and it is the only control ordered ahead of SUBJECT.
+  // Every other INCONCLUSIVE below says "this run measured nothing". This one
+  // says "this run DID something" — a write probe that was not refused reached
+  // the mutation. Hiding that behind a reading control would report damage as
+  // a methodology note. Derived from the rows rather than passed in, so a
+  // caller cannot forget to supply it.
+  if (landedWrites.length > 0) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        `a WRITE probe was not refused — ${landedWrites.join(', ')} answered without an error, so this run may have ` +
+        `MUTATED the target. Look for a task titled "${PROBE_TASK_TITLE}" and for attachments named ` +
+        '"not-shared-probe.txt" before trusting anything else here',
+      ...base,
+    };
+  }
+  // Then most-diagnostic first. A wrong subject makes every row below it a
   // reading of the wrong kind of object, and "no tool distinguishes" would be
   // the alarming reading reachable from it.
   if (!args.subjectControlOk) {
@@ -372,6 +440,10 @@ async function main(): Promise<number> {
         notShared: notShared.klass,
         neverReal: neverReal.klass,
         distinguishes: notShared.klass !== neverReal.klass,
+        write: p.write,
+        // Read off the transport, not off the classification: a refusal is an
+        // error, so a write that comes back WITHOUT one reached the mutation.
+        landed: p.write ? !notShared.isError || !neverReal.isError : undefined,
       });
     }
     // AUTH control on a tool that DID distinguish, if any — the garbage bearer
@@ -431,6 +503,19 @@ async function main(): Promise<number> {
         : '   — not run (subject control failed first)'),
   );
   console.log(`  CLASS CTL   a body with neither marker → OTHER_OK` + (classifierControlOk ? '   ✅' : '   ⛔'));
+  {
+    // Printed at zero on purpose: a safety control only visible when it fires
+    // is indistinguishable from one that was never run.
+    const writes = rows.filter((r) => r.write);
+    console.log(
+      `  WRITE CTL   ${writes.length} write probe(s) — ${verdict.landedWrites.length} not refused` +
+        (!subjectControlOk
+          ? '   — not run (subject control failed first)'
+          : verdict.landedWrites.length === 0
+            ? '   ✅ every write was refused, so nothing was mutated'
+            : `   ⛔ ${verdict.landedWrites.join(', ')} LANDED — this run may have changed the target`),
+    );
+  }
   console.log(
     `  SCOPE CTL   list_notes(${READABLE_SCOPE_TASK_ID}) → ${scopeReaderNotes < 0 ? 'not a readable list' : `${scopeReaderNotes} note(s)`}` +
       (subjectControlOk
