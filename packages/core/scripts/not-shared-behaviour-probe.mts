@@ -309,7 +309,206 @@ export const PROBE_UPLOAD_FILENAME = 'not-shared-probe-create-upload.txt';
  * rows are the ones the WRITE-SAFETY control watches: for a read probe a
  * non-error answer is just an answer, but for a write probe it is a write.
  */
-export type Probe = { tool: string; args: (id: string) => Record<string, unknown>; note: string; write?: boolean };
+export type Probe = {
+  tool: string;
+  args: (id: string) => Record<string, unknown>;
+  note: string;
+  write?: boolean;
+  /**
+   * A SECOND dimension, for a tool whose verdict is a function of more than the
+   * subject id. Absent on every single-argument row, and absent is the
+   * degenerate one-variant case — see `variantsOf`.
+   *
+   * A thunk on the endpoint url, not a literal, because the first variant set
+   * this file has needs the endpoint's own origin to build its fetchable url.
+   */
+  variants?: (endpointUrl: string) => ProbeVariant[];
+};
+
+/**
+ * One setting of a probe's OTHER arguments.
+ *
+ * ## Why this exists (precondition 21, earned 2026-09-15 09:4xZ on `Tx5g85uLq96D`)
+ *
+ * Every row on this table used to vary ONE thing — the id — and read the
+ * answer. That is silently correct only while the answer is a function of that
+ * one thing. `attach_file_from_url` takes an id **and** a url, and the two
+ * choices give OPPOSITE verdicts against the same prod build, same identity,
+ * same minute:
+ *
+ * ```
+ *   taskId=<not-shared> + url that cannot be fetched  →  error: fetch failed   OTHER_ERR
+ *   taskId=<not-shared> + url that yields a body      →  not_shared: …         NOT_SHARED
+ * ```
+ *
+ * A one-variant probe of that tool reports on the url it happened to pick, and
+ * both picks are wrong in opposite directions: the fetchable one scores the row
+ * 🟢 and hides the defect, the unfetchable one scores 🔴 for the wrong reason.
+ * So the row is only sayable as a SET of variants, and its roll-up is the
+ * conjunction — see `rollUpVariants`.
+ *
+ * `reachSafe` is NOT a style choice. It says this variant may also be sent with
+ * a subject the caller CAN read, which is precondition 12's third leg: without
+ * it, "both refused subjects answered the same thing" cannot be told apart from
+ * "this call never reached the handler". It is `false` exactly where the
+ * readable pairing is the one combination that could actually mutate.
+ */
+export type ProbeVariant = {
+  /** Printed on the row, e.g. `url=fetchable`. */
+  name: string;
+  args: (id: string) => Record<string, unknown>;
+  /** May this variant also be sent with a READABLE subject, as a reach leg? */
+  reachSafe: boolean;
+  /** One line on why this variant is here — printed, not just commented. */
+  why: string;
+};
+
+/**
+ * The variants a probe is actually run with. A row with no `variants` is one
+ * variant named `default` carrying its own `args`, so every caller below can
+ * treat the single- and multi-argument cases identically.
+ *
+ * ⚠️ The degenerate variant is `reachSafe: false` **deliberately**, and it is
+ * the scope line of this unit. Turning it on would add a third subject to every
+ * existing row and restate verdicts this card has published for days — in
+ * particular the three CONFLATING collection tools, whose reach leg needs a
+ * readable subject chosen per tool (a parent that HAS children, a scope that
+ * HAS notes) rather than one shared id. `list_notes` already has that control
+ * by hand as `SCOPE CTL`. Generalising it is the NEXT unit; doing it here would
+ * mean shipping a silent re-reading of rows nobody asked me to re-read.
+ */
+export function variantsOf(p: Probe, endpointUrl: string): ProbeVariant[] {
+  const vs = p.variants?.(endpointUrl);
+  if (vs?.length) return vs;
+  return [
+    {
+      name: 'default',
+      args: p.args,
+      reachSafe: false,
+      why: 'single-argument row — the id is the only thing varied, and its reading is unchanged by this dimension',
+    },
+  ];
+}
+
+/* ------------------------------------------------------------------ */
+/* the url dimension — `attach_file_from_url`'s second argument        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A url whose DNS cannot resolve. `.invalid` is reserved by RFC 2606 precisely
+ * so it can never be delegated, so no body can come back whichever order prod
+ * uses — the artifact is impossible by construction, not by argument.
+ *
+ * Lives here rather than in `attach-from-url-order-probe.mts` because that file
+ * already imports from this one; the order probe re-exports it, so there is one
+ * definition and its test keeps pinning the same object.
+ */
+export const AFU_UNFETCHABLE_URL = 'https://not-shared-probe.invalid/x.txt';
+
+/**
+ * A url that DOES yield a body, derived from the MCP endpoint's own origin
+ * rather than hard-coded — so the outbound request this probe causes stays
+ * inside the system under test. (An earlier hand pass pointed it at
+ * `verikal.ai` and put a row in a fleet property's own 404 census.)
+ */
+export function afuFetchableUrlFor(endpointUrl: string): string {
+  return `${new URL(endpointUrl).origin}/zzz-not-shared-order-ctl`;
+}
+
+/**
+ * The subject/url pairings this tool may be sent, anywhere in this repo.
+ *
+ * `readable × fetchable` is ABSENT on purpose and its absence IS the safety
+ * argument: it is the only pairing where an unrefused write has somewhere to
+ * land. Pinned by a test in both probes' suites.
+ */
+export const AFU_SAFE_PAIRINGS: {
+  subject: 'readable' | 'notShared' | 'neverReal' | 'neverRealNote';
+  url: 'unfetchable' | 'fetchable';
+}[] = [
+  { subject: 'readable', url: 'unfetchable' },
+  { subject: 'notShared', url: 'unfetchable' },
+  { subject: 'neverReal', url: 'unfetchable' },
+  { subject: 'neverRealNote', url: 'unfetchable' },
+  { subject: 'notShared', url: 'fetchable' },
+  { subject: 'neverReal', url: 'fetchable' },
+  { subject: 'neverRealNote', url: 'fetchable' },
+];
+
+export function afuPairingIsSafe(subject: string, url: string): boolean {
+  return AFU_SAFE_PAIRINGS.some((p) => p.subject === subject && p.url === url);
+}
+
+export type UrlPrecondition = { url: string; ok: boolean; detail: string };
+
+/**
+ * Read both urls from THIS box and decide whether the url dimension may run.
+ *
+ * `unfetchable` must genuinely fail to resolve. `fetchable` must genuinely
+ * return a body — if it ever starts 404ing, the fetchable leg silently becomes
+ * a second unfetchable leg and the whole dimension quietly loses its power,
+ * which is precondition 16's failure mode exactly. A run whose preconditions
+ * fail does NOT degrade to one variant: the row is skipped and goes back on the
+ * to-do list, because a row measured on half its dimension is a row with no
+ * reading behind it.
+ */
+export async function checkUrlPreconditions(fetchable: string): Promise<UrlPrecondition[]> {
+  const out: UrlPrecondition[] = [];
+
+  let unfetchableFailed = false;
+  let unfetchableDetail = '';
+  try {
+    await fetch(AFU_UNFETCHABLE_URL, { signal: AbortSignal.timeout(15_000) });
+    unfetchableDetail = 'RESOLVED — a reserved-TLD host answered; no artifact guarantee left';
+  } catch (err) {
+    unfetchableFailed = true;
+    unfetchableDetail = `does not resolve (${(err as Error).message}) — no body can ever come back`;
+  }
+  out.push({ url: AFU_UNFETCHABLE_URL, ok: unfetchableFailed, detail: unfetchableDetail });
+
+  try {
+    const res = await fetch(fetchable, { signal: AbortSignal.timeout(20_000) });
+    const body = await res.text();
+    out.push({
+      url: fetchable,
+      ok: res.ok && body.length > 0,
+      detail: `final status ${res.status} · ${body.length} B body · ${res.headers.get('content-type') ?? 'no content-type'}`,
+    });
+  } catch (err) {
+    out.push({ url: fetchable, ok: false, detail: `unreachable (${(err as Error).message})` });
+  }
+
+  return out;
+}
+
+/**
+ * The two variants of the `attach_file_from_url` row. Built from the endpoint
+ * url, because the fetchable one is derived from it.
+ *
+ * Note which one carries `reachSafe`. The UNFETCHABLE variant does, and it must
+ * — its three legs come back identical on prod today, and identical legs are
+ * this file's own test for *"never asked"*, not for *"conflates"*. The
+ * FETCHABLE variant does not, and cannot: `readable × fetchable` is the one
+ * pairing that could create an attachment. It does not need one, because two
+ * DIFFERENT handler verdicts across its refused legs already prove reach.
+ */
+export function afuVariants(endpointUrl: string): ProbeVariant[] {
+  const fetchable = afuFetchableUrlFor(endpointUrl);
+  return [
+    {
+      name: 'url=unfetchable',
+      args: (id) => ({ taskId: id, url: AFU_UNFETCHABLE_URL }),
+      reachSafe: true,
+      why: 'DNS cannot resolve it, so no artifact is possible in EITHER assert order — the variant that is safe to point at a readable subject',
+    },
+    {
+      name: 'url=fetchable',
+      args: (id) => ({ taskId: id, url: fetchable }),
+      reachSafe: false,
+      why: 'yields a body, so it reaches the handler — never paired with a readable subject, which is the only pairing that could land',
+    },
+  ];
+}
 
 /**
  * The probed set. Each row is a tool an agent reaches for when it is about to
@@ -436,6 +635,33 @@ export const PROBES: Probe[] = [
     tool: 'scratchpad_file',
     args: (id) => ({ id: SCRATCH_FIXTURE_ENTRY_ID, taskId: id }),
     note: 'WRITE — subject in taskId; the id slot holds a scratch entry this caller owns',
+    write: true,
+  },
+  // `attach_file_from_url(taskId=…)` — the FIRST multi-variant row on this
+  // table, and the reason the `variants` dimension exists at all.
+  //
+  // It was measured by hand against prod on 2026-09-15 08:5xZ and read
+  // CONFLATES; re-measured with a third subject at 09:4xZ that reading turned
+  // out to be unfalsifiable from its own output, and the real finding is one
+  // level in: **the verdict is decided by the probe's own SECOND argument.**
+  // Same id, same identity, same minute — `url` unfetchable answers a network
+  // error, `url` fetchable answers `not_shared`. Only fetch-then-assert
+  // explains both, and the assert that finally refuses is `createAttachment`'s,
+  // downstream, after the body is already buffered.
+  //
+  // So this row is deliberately NOT expressible as one verdict. Its roll-up is
+  // the conjunction over both variants (`rollUpVariants`), which is what makes
+  // the table refuse to print the comforting half of a disagreement.
+  //
+  // `npm run afu-order` remains the dedicated command and is NOT superseded: it
+  // carries the note leg, the WRITE-SAFETY before/after read on a readable
+  // task, and a `PROD-HOISTED` exit that tells you to delete it. This row
+  // carries the same tool into the COVERAGE frame, which the command cannot do.
+  {
+    tool: 'attach_file_from_url',
+    args: (id) => ({ taskId: id, url: AFU_UNFETCHABLE_URL }),
+    variants: afuVariants,
+    note: 'WRITE, TWO-DIMENSIONAL — the url decides the verdict, so one url is never a reading of this tool',
     write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
@@ -825,12 +1051,39 @@ export function scratchFixtureUsable(f: { reachOk: boolean; filedTaskId: string 
  * extraction for the other half of the decision, done BEFORE a second fixture
  * row made the inline version a two-case conditional.
  */
-export function probesToSkip(f: { moveFixtureOk: boolean; scratchFixtureOk: boolean }): string[] {
+export function probesToSkip(f: {
+  moveFixtureOk: boolean;
+  scratchFixtureOk: boolean;
+  /**
+   * Optional and defaulted to `true` so existing callers are unchanged: did
+   * BOTH urls of the `attach_file_from_url` dimension read as declared, from
+   * this box, before prod was asked?
+   *
+   * A failed precondition skips the row rather than degrading it to one
+   * variant. Degrading would be the worst available outcome here: with only
+   * the fetchable url the row scores 🟢 and the defect disappears; with only
+   * the unfetchable one it scores 🔴 for a reason its own output cannot
+   * support. A row measured on half its dimension belongs on the to-do list.
+   */
+  afuUrlsOk?: boolean;
+}): string[] {
   const skip: string[] = [];
   if (!f.moveFixtureOk) skip.push('move_task');
   if (!f.scratchFixtureOk) skip.push('scratchpad_file');
+  if (f.afuUrlsOk === false) skip.push('attach_file_from_url');
   return skip;
 }
+
+/**
+ * A task this caller can definitely read — precondition 12's third subject, and
+ * the one a `reachSafe` variant is paired with.
+ *
+ * Its job is to tell *"both refused subjects answered the same thing"* apart
+ * from *"this call never reached the handler"*. Three identical rows is the
+ * second, and on 2026-09-15 08:5xZ a hand pass published the first from exactly
+ * that output, because it had no third subject.
+ */
+export const READABLE_REACH_TASK_ID = process.env.READABLE_REACH_TASK_ID || 'Tx5g85uLq96D';
 
 /**
  * A scope this caller CAN read, holding at least one note. Without it the two
@@ -1077,12 +1330,77 @@ export function frameControlsOk(f: Frame): boolean {
   );
 }
 
+/**
+ * One variant's reading. `UNREACHED` is the status this table could not
+ * express before 2026-09-15: two identical refused legs are *"conflates"* only
+ * if you also know the call got into the handler, and the only thing that knows
+ * that is a third subject the caller CAN read (precondition 12).
+ */
+export type VariantStatus = 'DISTINGUISHES' | 'CONFLATES' | 'UNREACHED';
+
+export type VariantRow = {
+  name: string;
+  why: string;
+  notShared: Klass;
+  neverReal: Klass;
+  /** The reach leg, or `null` when this variant may not be paired with a readable subject. */
+  readable: Klass | null;
+  status: VariantStatus;
+};
+
+/**
+ * ⚠️ The `readable === null` branch falls to `CONFLATES`, NOT to a third
+ * "indeterminate" status, and that is a deliberate choice about what this
+ * change may restate.
+ *
+ * Every single-variant row on this table has no reach leg, so routing them to a
+ * new status would silently re-verdict `list_tasks` / `list_notes` /
+ * `search_notes` — three rows this card has published as CONFLATING for two
+ * days — on the strength of a leg that was never run. Their reading is
+ * unchanged and its limit is named where it belongs: in `variantsOf`, as the
+ * next unit. A reach leg that did NOT run cannot make a row greener OR redder.
+ */
+export function variantStatus(v: { notShared: Klass; neverReal: Klass; readable: Klass | null }): VariantStatus {
+  if (v.notShared !== v.neverReal) return 'DISTINGUISHES';
+  if (v.readable !== null && v.readable === v.notShared) return 'UNREACHED';
+  return 'CONFLATES';
+}
+
+/**
+ * Roll a row's variants into the fields the rest of the file already reads.
+ *
+ * The conjunction is the whole point: a two-dimensional tool that answers
+ * cleanly on one argument set and not on another is NOT a clean row, and the
+ * reading that says so must be the one that survives. Both single-url designs
+ * for `attach_file_from_url` were wrong in opposite directions; only the pair
+ * says anything.
+ */
+export function rollUpVariants(vs: VariantRow[]): {
+  distinguishes: boolean;
+  varies: boolean;
+  unreachedVariants: string[];
+  conflatingVariants: string[];
+} {
+  return {
+    distinguishes: vs.length > 0 && vs.every((v) => v.status === 'DISTINGUISHES'),
+    varies: new Set(vs.map((v) => v.status)).size > 1,
+    unreachedVariants: vs.filter((v) => v.status === 'UNREACHED').map((v) => v.name),
+    conflatingVariants: vs.filter((v) => v.status === 'CONFLATES').map((v) => v.name),
+  };
+}
+
 export type Row = {
   tool: string;
   note: string;
   notShared: Klass;
   neverReal: Klass;
   distinguishes: boolean;
+  /** Present on every row: one entry for a single-argument tool, several for a multi-argument one. */
+  variants?: VariantRow[];
+  /** The variants disagreed. The finding precondition 21 names, and it is invisible in `distinguishes`. */
+  varies?: boolean;
+  /** Variants whose three legs came back identical — never asked, not answered. */
+  unreachedVariants?: string[];
   /** Mirrors `Probe.write` — this call would have mutated had it not been refused. */
   write?: boolean;
   /**
@@ -1100,14 +1418,52 @@ export type Verdict = {
    * hand-picked twelfth of the surface is the comforting reading the card
    * exists to reject.
    */
-  status: 'DISTINGUISHES' | 'CONFLATES' | 'INCOMPLETE' | 'INCONCLUSIVE';
+  status: 'DISTINGUISHES' | 'CONFLATES' | 'VARIES' | 'INCOMPLETE' | 'INCONCLUSIVE';
   reason: string;
   conflating: string[];
+  /**
+   * Tools whose variants DISAGREED — the verdict is a function of an argument
+   * that has nothing to do with access. Present on every shape, so it is
+   * printable at zero: a finding only visible when it fires is indistinguishable
+   * from one that was never looked for.
+   */
+  varying: string[];
+  /** `tool[variant]` pairs whose three legs came back identical — never asked. */
+  unreached: string[];
   /** Write probes that were NOT refused. Non-empty means this run may have mutated prod. */
   landedWrites: string[];
   /** AT-RISK tools this run never asked. Present on every shape, so it is printable at zero. */
   unprobed: string[];
 };
+
+/**
+ * The exit contract, exported so a test pins THIS function rather than a copy
+ * of it. It lived inline in `main()` until 2026-09-15 11:5xZ, where no test
+ * could reach it — and a status landing in the `0` bucket makes the whole
+ * reading decorative, which is the one failure a suite of pure `decide` tests
+ * cannot see.
+ *
+ * `0` covered-and-clean · `1` CONFLATES / VARIES / INCOMPLETE · `2` INCONCLUSIVE.
+ */
+export function exitCodeFor(verdict: Verdict): number {
+  if (verdict.status === 'DISTINGUISHES') return 0;
+  if (verdict.status === 'CONFLATES' || verdict.status === 'VARIES' || verdict.status === 'INCOMPLETE') return 1;
+  return 2;
+}
+
+/**
+ * The clause that names a multi-argument disagreement, appended to whichever
+ * verdict wins. Returns `''` when nothing varies, so it costs a clean run
+ * nothing — but a VARYING row must never be readable only from the status line,
+ * because `CONFLATES` can outrank it and would then swallow it whole.
+ */
+export function varyingClause(varying: string[], unreached: string[]): string {
+  if (varying.length === 0) return '';
+  return (
+    `. ⚠️ ${varying.join(', ')} gave different verdicts on different argument sets` +
+    (unreached.length ? ` — ${unreached.join(', ')} never reached the handler at all` : '')
+  );
+}
 
 /** Decide from the rows plus every control reading. Pure, so tests can drive it. */
 export function decide(args: {
@@ -1152,10 +1508,22 @@ export function decide(args: {
    */
   frame?: Frame;
 }): Verdict {
-  const conflating = args.rows.filter((r) => !r.distinguishes).map((r) => r.tool);
+  // A row CONFLATES when some variant answered the two refused subjects
+  // identically AND that variant is known to have reached the handler. For a
+  // single-variant row (no reach leg) this is exactly `!distinguishes`, so
+  // every reading this table has already published is unchanged.
+  const conflating = args.rows
+    .filter((r) => (r.variants ? r.variants.some((v) => v.status === 'CONFLATES') : !r.distinguishes))
+    .map((r) => r.tool);
+  const varying = args.rows.filter((r) => r.varies).map((r) => r.tool);
+  const unreached = args.rows.flatMap((r) => (r.unreachedVariants ?? []).map((n) => `${r.tool}[${n}]`));
+  // A row with NO variant that reached the handler is not a reading at all.
+  const neverAsked = args.rows
+    .filter((r) => r.variants && r.variants.length > 0 && r.variants.every((v) => v.status === 'UNREACHED'))
+    .map((r) => r.tool);
   const landedWrites = args.rows.filter((r) => r.write && r.landed).map((r) => r.tool);
   const unprobed = args.frame?.unprobed ?? [];
-  const base = { conflating, landedWrites, unprobed };
+  const base = { conflating, varying, unreached, landedWrites, unprobed };
 
   // The STATE leg is ordered ahead of even the WRITE-SAFETY answer leg, because
   // it is the one reading that is about the world rather than about a reply.
@@ -1256,11 +1624,46 @@ export function decide(args: {
       (unprobed.length ? ` (${unprobed.join(', ')})` : '')
     : '';
 
+  // Ordered AHEAD of CONFLATES, for the same reason WRITE-SAFETY is ordered
+  // ahead of SUBJECT: every clause below says something about the build, and
+  // this one says the run did not ask. A row whose every variant came back
+  // identical on all three subjects — including one this caller CAN read — did
+  // not reach the handler, and publishing either verdict from that output is
+  // what happened by hand on 2026-09-15 08:5xZ.
+  if (neverAsked.length > 0) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        `${neverAsked.join(', ')} answered identically to the not-shared subject, the never-real one AND a subject ` +
+        'this caller can read, on every variant — three identical rows is "this tool was never asked", not ' +
+        '"this tool conflates". Nothing about the build is known from those rows',
+      ...base,
+    };
+  }
+
   if (conflating.length > 0) {
     return {
       status: 'CONFLATES',
       reason:
-        `${conflating.length} of ${args.rows.length} probed tool(s) answer the same thing to both subjects` + coverage,
+        `${conflating.length} of ${args.rows.length} probed tool(s) answer the same thing to both subjects` +
+        coverage +
+        varyingClause(varying, unreached),
+      ...base,
+    };
+  }
+
+  // VARIES — no row conflates on a reached variant, but at least one row gave
+  // DIFFERENT verdicts on different argument sets. Its own status rather than a
+  // footnote on DISTINGUISHES, because the comforting half of a disagreement is
+  // exactly what a one-variant probe would have printed on its own.
+  if (varying.length > 0) {
+    return {
+      status: 'VARIES',
+      reason:
+        `${varying.length} of ${args.rows.length} probed tool(s) give DIFFERENT verdicts on different argument ` +
+        'sets, so no single reading of them is a reading of the tool' +
+        coverage +
+        varyingClause(varying, unreached),
       ...base,
     };
   }
@@ -1402,6 +1805,11 @@ async function main(): Promise<number> {
   let scratchReachOk = false;
   let scratchFixtureOk = false;
   let scratchFixtureRepaired: boolean | null = null;
+  // URL-DIMENSION preconditions, read from THIS box before prod is asked.
+  let urlPreconditions: UrlPrecondition[] = [];
+  let afuUrlsOk = false;
+  // Every `tool[variant]` whose write probe came back WITHOUT an error.
+  const landedByVariant: string[] = [];
   const skippedProbes: string[] = [];
 
   if (subjectControlOk) {
@@ -1442,25 +1850,60 @@ async function main(): Promise<number> {
     scratchReachOk = !scratchReach.isError;
     scratchFixtureOk = scratchFixtureUsable({ reachOk: scratchReachOk, filedTaskId: scratchFiledBefore });
 
+    // URL-DIMENSION precondition, read from THIS box and BEFORE prod is asked,
+    // for the same reason the two fixtures are: a probe whose power depends on
+    // a fixture's state must assert that state (precondition 16). If either url
+    // is not what it is declared to be, the row is skipped rather than degraded
+    // to whichever single url still works.
+    urlPreconditions = await checkUrlPreconditions(afuFetchableUrlFor(url));
+    afuUrlsOk = urlPreconditions.every((p) => p.ok);
+
     // A row whose fixture precondition failed is NOT probed, and therefore not
     // in the probed set the frame is built from — it goes back on the to-do
     // list rather than becoming a row with no reading behind it.
-    skippedProbes.push(...probesToSkip({ moveFixtureOk, scratchFixtureOk }));
+    skippedProbes.push(...probesToSkip({ moveFixtureOk, scratchFixtureOk, afuUrlsOk }));
 
     for (const p of PROBES) {
       if (skippedProbes.includes(p.tool)) continue;
-      const notShared = await callTool(url, auth, p.tool, p.args(NOT_SHARED_TASK_ID));
-      const neverReal = await callTool(url, auth, p.tool, p.args(NEVER_REAL_TASK_ID));
+      const variants: VariantRow[] = [];
+      for (const v of variantsOf(p, url)) {
+        const notShared = await callTool(url, auth, p.tool, v.args(NOT_SHARED_TASK_ID));
+        const neverReal = await callTool(url, auth, p.tool, v.args(NEVER_REAL_TASK_ID));
+        // The reach leg, and it is opt-in per VARIANT rather than per tool:
+        // for `attach_file_from_url` the same tool is safe to point at a
+        // readable subject with one url and would create an attachment with
+        // the other.
+        const readable = v.reachSafe ? (await callTool(url, auth, p.tool, v.args(READABLE_REACH_TASK_ID))).klass : null;
+        variants.push({
+          name: v.name,
+          why: v.why,
+          notShared: notShared.klass,
+          neverReal: neverReal.klass,
+          readable,
+          status: variantStatus({ notShared: notShared.klass, neverReal: neverReal.klass, readable }),
+        });
+        // Read off the transport, not off the classification: a refusal is an
+        // error, so a write that comes back WITHOUT one reached the mutation.
+        // Accumulated across variants — a write that landed on ANY argument set
+        // landed. The reach leg counts too: on a readable subject it is the one
+        // call here whose success would be a real attachment.
+        if (p.write && (!notShared.isError || !neverReal.isError)) landedByVariant.push(`${p.tool}[${v.name}]`);
+      }
+      const rolled = rollUpVariants(variants);
       rows.push({
         tool: p.tool,
         note: p.note,
-        notShared: notShared.klass,
-        neverReal: neverReal.klass,
-        distinguishes: notShared.klass !== neverReal.klass,
+        // The headline pair stays the FIRST variant's, so a single-argument row
+        // prints exactly what it always printed and a multi-argument one is
+        // never summarised into one column it does not have.
+        notShared: variants[0].notShared,
+        neverReal: variants[0].neverReal,
+        distinguishes: rolled.distinguishes,
+        variants,
+        varies: rolled.varies,
+        unreachedVariants: rolled.unreachedVariants,
         write: p.write,
-        // Read off the transport, not off the classification: a refusal is an
-        // error, so a write that comes back WITHOUT one reached the mutation.
-        landed: p.write ? !notShared.isError || !neverReal.isError : undefined,
+        landed: p.write ? landedByVariant.some((l) => l.startsWith(`${p.tool}[`)) : undefined,
       });
     }
     // AUTH control on a tool that DID distinguish, if any — the garbage bearer
@@ -1556,8 +1999,7 @@ async function main(): Promise<number> {
     scratchFixtureMoved: scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore,
     frame,
   });
-  const code =
-    verdict.status === 'DISTINGUISHES' ? 0 : verdict.status === 'CONFLATES' || verdict.status === 'INCOMPLETE' ? 1 : 2;
+  const code = exitCodeFor(verdict);
 
   const deferred = DEFERRED.filter((d) => !process.env[d.envVar]);
 
@@ -1582,7 +2024,7 @@ async function main(): Promise<number> {
     return code;
   }
 
-  const glyph = { DISTINGUISHES: '🟢', CONFLATES: '🔴', INCOMPLETE: '🟡', INCONCLUSIVE: '⛔' }[verdict.status];
+  const glyph = { DISTINGUISHES: '🟢', CONFLATES: '🔴', VARIES: '🟠', INCOMPLETE: '🟡', INCONCLUSIVE: '⛔' }[verdict.status];
   console.log(`# not_shared BEHAVIOUR probe — ${url}`);
   console.log(`  axis        what the tool ANSWERS. The deploy marker reads what it SAYS — run both.`);
   console.log(`  SUBJECT CTL ${NOT_SHARED_TASK_ID} → ${subject.klass}` + (subjectControlOk ? '   ✅ exists, not shared' : '   ⛔ wrong kind of row'));
@@ -1665,14 +2107,46 @@ async function main(): Promise<number> {
               : `   ⛔ ${open.map((r) => r.tool).join(', ')} — the deferral is STALE, probe these now`),
     );
   }
+  {
+    // Printed every run, at both values, because this control's whole job is
+    // to notice its own fixture lapsing. If the fetchable url ever starts
+    // 404ing it silently becomes a SECOND unfetchable url and the url dimension
+    // loses all its power while still printing two rows.
+    const bad = urlPreconditions.filter((p) => !p.ok);
+    console.log(
+      `  URL   CTL   ${urlPreconditions.length} url(s) in the attach_file_from_url dimension — ${bad.length} not as declared` +
+        (!subjectControlOk
+          ? '   — not run (subject control failed first)'
+          : urlPreconditions.length === 0
+            ? '   — not run'
+            : bad.length === 0
+              ? '   ✅ one resolves to a body, one cannot resolve at all'
+              : `   ⚪ ${bad.map((p) => p.url).join(', ')} — attach_file_from_url NOT probed, and is back on the to-do list`),
+    );
+    for (const p of urlPreconditions) console.log(`              ${p.ok ? '✅' : '🔴'} ${p.url} — ${p.detail}`);
+  }
   console.log('');
   if (rows.length) {
-    console.log(`  tool               not-shared subject   never-real subject   verdict`);
+    console.log(`  tool                    not-shared subject   never-real subject   verdict`);
     for (const r of rows) {
+      const multi = (r.variants?.length ?? 1) > 1;
       console.log(
-        `  ${r.tool.padEnd(18)} ${r.notShared.padEnd(20)} ${r.neverReal.padEnd(20)} ` +
-          `${r.distinguishes ? '✅ distinguishes' : '🔴 CONFLATES'}   ${r.note}`,
+        `  ${r.tool.padEnd(23)} ${(multi ? '—' : r.notShared).padEnd(20)} ${(multi ? '—' : r.neverReal).padEnd(20)} ` +
+          `${r.distinguishes ? '✅ distinguishes' : r.varies ? '🟠 VARIES BY ARGUMENT' : '🔴 CONFLATES'}   ${r.note}`,
       );
+      // A multi-argument row prints EVERY variant, never a summary. The summary
+      // is the thing precondition 21 says cannot exist: one of these lines is
+      // what a single-url probe would have published on its own.
+      if (multi) {
+        for (const v of r.variants!) {
+          const glyphs = { DISTINGUISHES: '✅', CONFLATES: '🔴', UNREACHED: '⚪' } as const;
+          console.log(
+            `     ${glyphs[v.status]} ${v.name.padEnd(18)} not-shared ${v.notShared.padEnd(13)} never-real ${v.neverReal.padEnd(13)} ` +
+              `readable ${(v.readable ?? 'NOT SENT — unsafe pairing').padEnd(26)} ${v.status}`,
+          );
+          console.log(`        ${v.why}`);
+        }
+      }
     }
     console.log('');
   }

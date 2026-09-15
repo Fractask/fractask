@@ -48,7 +48,19 @@ import {
   probesToSkip,
   probedNamesFor,
   parentIdOf,
+  variantsOf,
+  variantStatus,
+  rollUpVariants,
+  varyingClause,
+  exitCodeFor,
+  afuVariants,
+  afuPairingIsSafe,
+  AFU_SAFE_PAIRINGS,
+  AFU_UNFETCHABLE_URL,
+  afuFetchableUrlFor,
+  READABLE_REACH_TASK_ID,
   type Row,
+  type VariantRow,
   type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
 import { TOOLS } from './mcp-tools.ts';
@@ -392,6 +404,12 @@ describe('the probed set', () => {
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
     assert.deepEqual(writes, [
       'attach_file',
+      // Added 2026-09-15 11:5xZ with the `variants` dimension. The pin fired on
+      // this addition too — and it matters more here than on any previous row,
+      // because this tool's fetchable variant is the only call on the table
+      // that makes prod perform an outbound GET and buffer a body before the
+      // access assert. An unflagged write probe is watched by nothing.
+      'attach_file_from_url',
       'create_note',
       'create_task',
       'create_upload',
@@ -1174,5 +1192,244 @@ describe('scratchpad_file — reachability is not blast radius, and only the sec
     const unfiled = JSON.stringify([{ id: SCRATCH_FIXTURE_ENTRY_ID, filedTaskId: null }]);
     assert.equal(filedTaskIdOf({ isError: false, text: unfiled }, SCRATCH_FIXTURE_ENTRY_ID), null);
     assert.equal(scratchFixtureUsable({ reachOk: true, filedTaskId: null }), false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the VARIANTS dimension — a tool whose verdict rides a second argument */
+/* ------------------------------------------------------------------ */
+
+const variantRow = (
+  name: string,
+  notShared: Row['notShared'],
+  neverReal: Row['neverReal'],
+  readable: VariantRow['readable'],
+): VariantRow => ({
+  name,
+  why: '',
+  notShared,
+  neverReal,
+  readable,
+  status: variantStatus({ notShared, neverReal, readable }),
+});
+
+/**
+ * `attach_file_from_url` on prod, measured 2026-09-15 09:4xZ and again at
+ * 11:5xZ: the fetchable url gets two distinct handler verdicts, the unfetchable
+ * one gets a network error from all three subjects INCLUDING a readable one.
+ */
+const AFU_PROD_VARIANTS: VariantRow[] = [
+  variantRow('url=unfetchable', 'OTHER_ERR', 'OTHER_ERR', 'OTHER_ERR'),
+  variantRow('url=fetchable', 'NOT_SHARED', 'NOT_FOUND', null),
+];
+
+function afuRow(variants: VariantRow[] = AFU_PROD_VARIANTS): Row {
+  const rolled = rollUpVariants(variants);
+  return {
+    tool: 'attach_file_from_url',
+    note: '',
+    notShared: variants[0].notShared,
+    neverReal: variants[0].neverReal,
+    distinguishes: rolled.distinguishes,
+    variants,
+    varies: rolled.varies,
+    unreachedVariants: rolled.unreachedVariants,
+    write: true,
+    landed: false,
+  };
+}
+
+describe('variantsOf — the degenerate case must be byte-identical to what it replaced', () => {
+  it('a probe with no variants yields exactly one, carrying its own args', () => {
+    const p = PROBES.find((x) => x.tool === 'get_task')!;
+    const vs = variantsOf(p, 'https://example.com/api/mcp');
+    assert.equal(vs.length, 1);
+    assert.deepEqual(vs[0].args(NOT_SHARED_TASK_ID), p.args(NOT_SHARED_TASK_ID));
+  });
+
+  it('and it is reachSafe:false — this change may not silently re-verdict the existing rows', () => {
+    // The scope line of the unit. A reach leg on the single-argument rows would
+    // add a third subject to `list_tasks` / `list_notes` / `search_notes` and
+    // restate three verdicts this card has published for two days, off a leg
+    // whose readable subject has not been chosen per tool. NEG-CTL for the
+    // whole dimension: if this ever flips, the table changed meaning.
+    for (const p of PROBES.filter((x) => !x.variants)) {
+      assert.equal(variantsOf(p, 'https://example.com/api/mcp')[0].reachSafe, false, `${p.tool}`);
+    }
+  });
+
+  it('every single-argument row still reads exactly as before — no reach leg, so no new status', () => {
+    // POS-CTL for the paragraph above, at the level that matters: the VERDICT.
+    assert.equal(variantStatus({ notShared: 'EMPTY_SUCCESS', neverReal: 'EMPTY_SUCCESS', readable: null }), 'CONFLATES');
+    assert.equal(variantStatus({ notShared: 'NOT_SHARED', neverReal: 'NOT_FOUND', readable: null }), 'DISTINGUISHES');
+    // …and the three collection rows this card publishes as CONFLATING still do.
+    const v = decide(prodNotesToday());
+    assert.equal(v.status, 'CONFLATES');
+    assert.deepEqual(v.conflating, ['list_tasks', 'list_notes', 'search_notes']);
+  });
+});
+
+describe('variantStatus — three identical rows is "never asked", not "conflates"', () => {
+  it('UNREACHED when the READABLE subject answers the same thing as both refused ones', () => {
+    // The exact output the 2026-09-15 08:5xZ hand pass published `CONFLATES`
+    // from. It had no third subject, so its reading was unfalsifiable from its
+    // own output — and it was wrong.
+    assert.equal(variantStatus({ notShared: 'OTHER_ERR', neverReal: 'OTHER_ERR', readable: 'OTHER_ERR' }), 'UNREACHED');
+  });
+
+  it('CONFLATES when the readable subject DIFFERS — the call did reach the handler', () => {
+    assert.equal(variantStatus({ notShared: 'EMPTY_SUCCESS', neverReal: 'EMPTY_SUCCESS', readable: 'OTHER_OK' }), 'CONFLATES');
+  });
+
+  it('DISTINGUISHES needs no reach leg — two different handler verdicts ARE the reach proof', () => {
+    assert.equal(variantStatus({ notShared: 'NOT_SHARED', neverReal: 'NOT_FOUND', readable: null }), 'DISTINGUISHES');
+  });
+});
+
+describe('rollUpVariants — the conjunction, because the comforting half must not win', () => {
+  it("prod's attach_file_from_url does NOT roll up to distinguishing, though one variant does", () => {
+    const rolled = rollUpVariants(AFU_PROD_VARIANTS);
+    assert.equal(rolled.distinguishes, false);
+    assert.equal(rolled.varies, true);
+    assert.deepEqual(rolled.unreachedVariants, ['url=unfetchable']);
+  });
+
+  it('ABLATION — the fetchable-url-only probe, which is what a one-dimensional table would have printed', () => {
+    // 🟢 and the defect is invisible. This is the single-url design that scores
+    // the row green, reproduced so the reason the dimension exists is a test
+    // rather than a paragraph.
+    const rolled = rollUpVariants([variantRow('url=fetchable', 'NOT_SHARED', 'NOT_FOUND', null)]);
+    assert.equal(rolled.distinguishes, true);
+    assert.equal(rolled.varies, false);
+  });
+
+  it('ABLATION — the unfetchable-url-only probe: right verdict, wrong reason, and it is caught', () => {
+    // The other single-url design. Without the roll-up this reads 🔴 CONFLATES
+    // off three identical rows; with the reach leg it reads UNREACHED, and
+    // `decide` turns that into INCONCLUSIVE rather than a finding.
+    const only = [variantRow('url=unfetchable', 'OTHER_ERR', 'OTHER_ERR', 'OTHER_ERR')];
+    assert.deepEqual(rollUpVariants(only).unreachedVariants, ['url=unfetchable']);
+    const v = decide({ ...prodToday(), rows: [...prodToday().rows.filter((r) => r.tool !== 'list_tasks'), afuRow(only)] });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /never asked/);
+  });
+});
+
+describe('decide — VARIES is its own status, and CONFLATES must not swallow it', () => {
+  it("reports VARIES on prod's reading once nothing else conflates", () => {
+    const base = prodToday();
+    const v = decide({ ...base, rows: [...base.rows.filter((r) => r.tool !== 'list_tasks'), afuRow()] });
+    assert.equal(v.status, 'VARIES');
+    assert.deepEqual(v.varying, ['attach_file_from_url']);
+    assert.deepEqual(v.unreached, ['attach_file_from_url[url=unfetchable]']);
+  });
+
+  it('and it is NOT lost when a real conflation outranks it — the clause rides the reason', () => {
+    // CONFLATES is the higher-ranked status, so without `varyingClause` the
+    // VARIES finding would be invisible on exactly the days this card has had
+    // for two weeks: days when list_tasks is red.
+    const v = decide({ ...prodNotesToday(), rows: [...prodNotesToday().rows, afuRow()] });
+    assert.equal(v.status, 'CONFLATES');
+    assert.deepEqual(v.varying, ['attach_file_from_url']);
+    assert.match(v.reason, /different verdicts on different argument sets/);
+    assert.match(v.reason, /never reached the handler/);
+  });
+
+  it('ABLATION — strip the clause and the CONFLATES reason stops mentioning the varying row', () => {
+    // Counter-ablation for the test above: the assertion must fail for the
+    // right reason, i.e. the clause is load-bearing rather than incidentally
+    // matched by some other sentence.
+    assert.equal(varyingClause([], []), '');
+    assert.doesNotMatch(
+      `1 of 5 probed tool(s) answer the same thing to both subjects${varyingClause([], [])}`,
+      /different verdicts on different argument sets/,
+    );
+  });
+
+  it('varying is printable at zero on every shape — a finding only visible when it fires is not a finding', () => {
+    for (const v of [decide(prodToday()), decide(prodNotesToday()), decide({ ...prodToday(), subjectControlOk: false })]) {
+      assert.deepEqual(v.varying, []);
+      assert.deepEqual(v.unreached, []);
+    }
+  });
+
+  it('VARIES exits 1, not 0 — pinned on the REAL exit map, not a copy of it', () => {
+    // The map lived inline in `main()` and no test could reach it, so this
+    // test would have been a re-implementation agreeing with itself. It is
+    // exported now: `VARIES` landing in the 0 bucket makes the whole dimension
+    // decorative, and that is invisible to a suite of pure `decide` tests.
+    const base = prodToday();
+    const varies = decide({ ...base, rows: [...base.rows.filter((r) => r.tool !== 'list_tasks'), afuRow()] });
+    assert.equal(varies.status, 'VARIES');
+    assert.equal(exitCodeFor(varies), 1);
+    // The other three buckets, so the map is not stuck at 1.
+    assert.equal(exitCodeFor(decide({ ...base, rows: base.rows.filter((r) => r.tool !== 'list_tasks') })), 0);
+    assert.equal(exitCodeFor(decide(prodToday())), 1);
+    assert.equal(exitCodeFor(decide({ ...base, subjectControlOk: false })), 2);
+  });
+});
+
+describe('the url dimension — its fixtures, and the pairing it may never send', () => {
+  it('readable × fetchable is absent from AFU_SAFE_PAIRINGS, and the variant table agrees with it', () => {
+    // The two halves of the safety argument were written in different files and
+    // could drift. This is the JOIN: `reachSafe` is exactly the pairings the
+    // table permits with a readable subject. A variant marked reachSafe that
+    // the pairing table forbids would send the one call that can land.
+    assert.equal(afuPairingIsSafe('readable', 'fetchable'), false);
+    for (const v of afuVariants('https://example.com/api/mcp')) {
+      const kind = v.name === 'url=unfetchable' ? 'unfetchable' : 'fetchable';
+      assert.equal(v.reachSafe, afuPairingIsSafe('readable', kind), `${v.name} reachSafe must match the pairing table`);
+    }
+  });
+
+  it('every other pairing IS allowed, so the gate is not vacuous', () => {
+    for (const subject of ['notShared', 'neverReal', 'neverRealNote'] as const) {
+      for (const url of ['unfetchable', 'fetchable'] as const) assert.ok(afuPairingIsSafe(subject, url));
+    }
+    assert.ok(afuPairingIsSafe('readable', 'unfetchable'));
+    assert.equal(AFU_SAFE_PAIRINGS.length, 7);
+  });
+
+  it('the reach leg is sent to a task this caller can READ, and it is not either subject', () => {
+    assert.notEqual(READABLE_REACH_TASK_ID, NOT_SHARED_TASK_ID);
+    assert.notEqual(READABLE_REACH_TASK_ID, NEVER_REAL_TASK_ID);
+  });
+
+  it('the unfetchable url is a reserved TLD, so no body can come back in EITHER assert order', () => {
+    assert.match(AFU_UNFETCHABLE_URL, /\.invalid\//);
+  });
+
+  it("the fetchable url is derived from the endpoint's own origin, never hard-coded at a fleet property", () => {
+    // An earlier hand pass pointed it at verikal.ai and put a row in that
+    // site's own 404 census — a probe that makes another lane's gauge red.
+    assert.equal(afuFetchableUrlFor('https://x.example.com/api/mcp'), 'https://x.example.com/zzz-not-shared-order-ctl');
+  });
+
+  it('a failed url precondition SKIPS the row rather than degrading it to one variant', () => {
+    // Degrading is the worst available outcome: with only the fetchable url the
+    // row scores green and the defect disappears. A row measured on half its
+    // dimension is a row with no reading behind it, so it goes back on the
+    // to-do list — where the frame counts it as unprobed.
+    assert.deepEqual(probesToSkip({ moveFixtureOk: true, scratchFixtureOk: true, afuUrlsOk: false }), ['attach_file_from_url']);
+    assert.deepEqual(probesToSkip({ moveFixtureOk: true, scratchFixtureOk: true, afuUrlsOk: true }), []);
+    // Defaulted, so every existing caller is unchanged.
+    assert.deepEqual(probesToSkip({ moveFixtureOk: true, scratchFixtureOk: true }), []);
+    assert.ok(!probedNamesFor(['attach_file_from_url']).includes('attach_file_from_url'));
+  });
+
+  it('attach_file_from_url is on the table and carries the dimension', () => {
+    const p = PROBES.find((x) => x.tool === 'attach_file_from_url');
+    assert.ok(p, 'the tool the whole dimension exists for must be probed');
+    assert.equal(variantsOf(p, 'https://example.com/api/mcp').length, 2);
+    assert.equal(p.write, true);
+  });
+
+  it('it is AT-RISK in the frame, so probing it moves the coverage denominator', () => {
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor([]));
+    assert.ok(frame.atRisk.includes('attach_file_from_url'));
+    assert.ok(!frame.unprobed.includes('attach_file_from_url'));
+    // …and skipping it puts it straight back on the to-do list.
+    const skipped = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor(['attach_file_from_url']));
+    assert.ok(skipped.unprobed.includes('attach_file_from_url'));
   });
 });

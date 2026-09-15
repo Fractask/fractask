@@ -71,6 +71,10 @@ import {
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
   NEVER_REAL_NOTE_ID,
+  AFU_UNFETCHABLE_URL as UNFETCHABLE_URL,
+  afuFetchableUrlFor as fetchableUrlFor,
+  afuPairingIsSafe as pairingIsSafe,
+  checkUrlPreconditions,
   type Answer,
   type Klass,
 } from './not-shared-behaviour-probe.mts';
@@ -79,84 +83,18 @@ import {
 export const READABLE_TASK_ID = process.env.READABLE_TASK_ID || 'Tx5g85uLq96D';
 
 /**
- * A url whose DNS cannot resolve. `.invalid` is reserved by RFC 2606 precisely
- * so it can never be delegated, so no body can come back whichever order prod
- * uses — the artifact is impossible by construction, not by argument.
- */
-export const UNFETCHABLE_URL = 'https://not-shared-probe.invalid/x.txt';
-
-/**
- * A url that DOES yield a body, derived from the MCP endpoint's own origin
- * rather than hard-coded.
+ * The url dimension itself now lives in `not-shared-behaviour-probe.mts`, where
+ * `attach_file_from_url` is a two-variant ROW as of 2026-09-15 11:5xZ. These
+ * re-exports keep one definition of the safety table rather than two copies
+ * that can drift — this file's suite and the table's suite pin the same object.
  *
- * Deliberately the same service we are already talking to: the 08:5xZ hand pass
- * used `https://verikal.ai/zzz-…`, which made a fleet property's own 404 census
- * carry a row that belonged to this probe. Pointing it at the endpoint's origin
- * keeps the outbound request inside the system under test.
+ * This command is NOT superseded by that row and must not be deleted for it.
+ * It carries three things the table cannot: the never-real NOTE leg, the
+ * WRITE-SAFETY before/after read of a readable task's attachments, and a
+ * `PROD-HOISTED` exit that tells you the defect is gone.
  */
-export function fetchableUrlFor(endpointUrl: string): string {
-  return `${new URL(endpointUrl).origin}/zzz-not-shared-order-ctl`;
-}
-
-/**
- * The subject/url pairings this probe is allowed to send.
- *
- * `readable × fetchable` is ABSENT on purpose and its absence is the safety
- * argument: it is the only pairing where an unrefused write has somewhere to
- * land. Pinned by a test.
- */
-export const SAFE_PAIRINGS: { subject: 'readable' | 'notShared' | 'neverReal' | 'neverRealNote'; url: 'unfetchable' | 'fetchable' }[] = [
-  { subject: 'readable', url: 'unfetchable' },
-  { subject: 'notShared', url: 'unfetchable' },
-  { subject: 'neverReal', url: 'unfetchable' },
-  { subject: 'neverRealNote', url: 'unfetchable' },
-  { subject: 'notShared', url: 'fetchable' },
-  { subject: 'neverReal', url: 'fetchable' },
-  { subject: 'neverRealNote', url: 'fetchable' },
-];
-
-export function pairingIsSafe(subject: string, url: string): boolean {
-  return SAFE_PAIRINGS.some((p) => p.subject === subject && p.url === url);
-}
-
-export type UrlPrecondition = { url: string; ok: boolean; detail: string };
-
-/**
- * Read both urls from THIS box and decide whether the probe may run.
- *
- * `unfetchable` must genuinely fail to resolve. `fetchable` must genuinely
- * return a body — if it ever starts 404ing, the fetchable leg silently becomes
- * a second unfetchable leg and the ORDER reading quietly loses its power, which
- * is precondition 16's failure mode exactly.
- */
-export async function checkUrlPreconditions(fetchable: string): Promise<UrlPrecondition[]> {
-  const out: UrlPrecondition[] = [];
-
-  let unfetchableFailed = false;
-  let unfetchableDetail = '';
-  try {
-    await fetch(UNFETCHABLE_URL, { signal: AbortSignal.timeout(15_000) });
-    unfetchableDetail = 'RESOLVED — a reserved-TLD host answered; no artifact guarantee left';
-  } catch (err) {
-    unfetchableFailed = true;
-    unfetchableDetail = `does not resolve (${(err as Error).message}) — no body can ever come back`;
-  }
-  out.push({ url: UNFETCHABLE_URL, ok: unfetchableFailed, detail: unfetchableDetail });
-
-  try {
-    const res = await fetch(fetchable, { signal: AbortSignal.timeout(20_000) });
-    const body = await res.text();
-    out.push({
-      url: fetchable,
-      ok: res.ok && body.length > 0,
-      detail: `final status ${res.status} · ${body.length} B body · ${res.headers.get('content-type') ?? 'no content-type'}`,
-    });
-  } catch (err) {
-    out.push({ url: fetchable, ok: false, detail: `unreachable (${(err as Error).message})` });
-  }
-
-  return out;
-}
+export { AFU_SAFE_PAIRINGS as SAFE_PAIRINGS, type UrlPrecondition } from './not-shared-behaviour-probe.mts';
+export { UNFETCHABLE_URL, fetchableUrlFor, pairingIsSafe, checkUrlPreconditions };
 
 export type OrderReading = {
   notSharedUnfetchable: Klass;
