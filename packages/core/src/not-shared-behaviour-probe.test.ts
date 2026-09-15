@@ -41,6 +41,11 @@ import {
   MOVE_FIXTURE_TASK_ID,
   MOVE_FIXTURE_PARENT_ID,
   moveFixtureUsable,
+  SCRATCH_FIXTURE_ENTRY_ID,
+  SCRATCH_FIXTURE_TASK_ID,
+  scratchFixtureUsable,
+  filedTaskIdOf,
+  probesToSkip,
   probedNamesFor,
   parentIdOf,
   type Row,
@@ -396,6 +401,8 @@ describe('the probed set', () => {
       // DESTRUCTIVE write rather than a stray row.
       'move_task',
       'post_comment',
+      // Added 2026-09-15 06:2xZ. The pin fired on this addition too.
+      'scratchpad_file',
       'update_task',
     ]);
     for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
@@ -1004,5 +1011,129 @@ describe('a SKIPPED probe is not a probed tool — the branch an ablation found 
   it('skipping one row does not disturb the others', () => {
     const names = probedNamesFor(['move_task']);
     for (const t of ['get_task', 'list_tasks', 'create_upload']) assert.ok(names.includes(t));
+  });
+
+  it('decides the skip list from the fixture preconditions, one row each', () => {
+    // Extracted from `main()` deliberately: the inline version of this
+    // decision was the branch ABL-7 proved untestable on 2026-09-15 03:5xZ.
+    assert.deepEqual(probesToSkip({ moveFixtureOk: true, scratchFixtureOk: true }), []);
+    assert.deepEqual(probesToSkip({ moveFixtureOk: false, scratchFixtureOk: true }), ['move_task']);
+    assert.deepEqual(probesToSkip({ moveFixtureOk: true, scratchFixtureOk: false }), ['scratchpad_file']);
+    // One bad fixture must not take the other row down with it, and two bad
+    // ones must not collapse to one — the case a hard-coded name would miss.
+    assert.deepEqual(probesToSkip({ moveFixtureOk: false, scratchFixtureOk: false }), [
+      'move_task',
+      'scratchpad_file',
+    ]);
+  });
+
+  it('puts scratchpad_file back on the to-do list too — the guard is per ROW, not per tool name', () => {
+    // The skip branch was written for move_task and then reused. A second row
+    // relying on it is exactly where a hard-coded name would have survived
+    // unnoticed, so it is asserted rather than assumed.
+    const names = probedNamesFor(['scratchpad_file']);
+    assert.ok(!names.includes('scratchpad_file'));
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], names);
+    assert.ok(frame.unprobed.includes('scratchpad_file'));
+  });
+});
+
+describe('scratchpad_file — reachability is not blast radius, and only the second one decided it', () => {
+  const sf = PROBES.find((p) => p.tool === 'scratchpad_file');
+
+  it('is probed, and probed as a WRITE', () => {
+    assert.ok(sf, 'scratchpad_file must be in PROBES');
+    assert.equal(sf!.write, true);
+  });
+
+  it('puts the VARYING subject in taskId and a caller-owned entry in the id slot', () => {
+    // fileScratchEntry asserts `id` FIRST (loadAccessible) and `taskId` second.
+    // A never-real id in the `id` slot short-circuits on the first assert, so
+    // both legs would answer not_found off an assert that has nothing to do
+    // with the destination — the move_task defect, on a different surface.
+    const args = sf!.args('SUBJECT') as { id: string; taskId: string };
+    assert.equal(args.taskId, 'SUBJECT', 'the subject under test must be the FILING TARGET');
+    assert.equal(args.id, SCRATCH_FIXTURE_ENTRY_ID, 'the id slot must hold the caller-owned entry');
+    assert.notEqual(args.id, 'SUBJECT');
+  });
+
+  it('is NOT in UNPROBEABLE — and the reason is the access rule, not the assert order', () => {
+    // update_note has the IDENTICAL assert order and is UNSAFE-SUBJECT. If the
+    // order were the criterion these two would have the same verdict, so this
+    // pair is what stops "it has the move_task shape" from ever again being
+    // the whole argument.
+    assert.ok(!UNPROBEABLE.some((u) => u.tool === 'scratchpad_file'));
+    assert.ok(UNPROBEABLE.some((u) => u.tool === 'update_note'));
+  });
+
+  it('bounds the blast radius to a row this caller can read and re-file', () => {
+    assert.ok(SCRATCH_FIXTURE_TASK_ID.length > 0);
+    assert.notEqual(SCRATCH_FIXTURE_TASK_ID, NOT_SHARED_TASK_ID);
+    assert.notEqual(SCRATCH_FIXTURE_TASK_ID, NEVER_REAL_TASK_ID);
+    assert.notEqual(SCRATCH_FIXTURE_ENTRY_ID, MOVE_FIXTURE_TASK_ID);
+  });
+
+  it('refuses to probe on an unusable fixture rather than publishing a row with no reading behind it', () => {
+    assert.equal(scratchFixtureUsable({ reachOk: true, filedTaskId: SCRATCH_FIXTURE_TASK_ID }), true);
+    assert.equal(scratchFixtureUsable({ reachOk: false, filedTaskId: SCRATCH_FIXTURE_TASK_ID }), false);
+    // Filed somewhere else = a PREVIOUS run landed a write nobody repaired.
+    assert.equal(scratchFixtureUsable({ reachOk: true, filedTaskId: NOT_SHARED_TASK_ID }), false);
+    assert.equal(scratchFixtureUsable({ reachOk: true, filedTaskId: null }), false);
+  });
+
+  it('reads the STATE, not just the answer', () => {
+    const v = decide({
+      rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')],
+      subjectControlOk: true,
+      authControlSameAsReal: false,
+      classifierControlOk: true,
+      scratchFixtureMoved: true,
+    });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /NOT filed where it was before this run/);
+    assert.match(v.reason, new RegExp(SCRATCH_FIXTURE_ENTRY_ID));
+  });
+
+  it('the state leg outranks the subject and answer controls', () => {
+    const v = decide({
+      rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')],
+      subjectControlOk: false,
+      authControlSameAsReal: true,
+      classifierControlOk: false,
+      scratchFixtureMoved: true,
+    });
+    assert.match(v.reason, /NOT filed where it was before this run/);
+  });
+
+  it('defaults to not-moved, so an older caller is unchanged', () => {
+    const v = decide({
+      rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')],
+      subjectControlOk: true,
+      authControlSameAsReal: false,
+      classifierControlOk: true,
+    });
+    assert.notEqual(v.status, 'INCONCLUSIVE');
+  });
+
+  it('filedTaskIdOf selects the fixture BY ID, never the first row of the list', () => {
+    // There is no scalar getter for a scratch entry on the MCP surface, so the
+    // enumerator is the only reader — and its first row is the NEWEST entry,
+    // which on any day the caller captured an idea is not the fixture.
+    const list = JSON.stringify([
+      { id: 'somethingElse', filedTaskId: 'WRONG' },
+      { id: SCRATCH_FIXTURE_ENTRY_ID, filedTaskId: SCRATCH_FIXTURE_TASK_ID },
+    ]);
+    assert.equal(filedTaskIdOf({ isError: false, text: list }, SCRATCH_FIXTURE_ENTRY_ID), SCRATCH_FIXTURE_TASK_ID);
+  });
+
+  it('keeps "could not read the list" distinct from "read it, the entry is unfiled"', () => {
+    assert.equal(filedTaskIdOf({ isError: true, text: 'not_shared: …' }, SCRATCH_FIXTURE_ENTRY_ID), null);
+    assert.equal(filedTaskIdOf({ isError: false, text: 'not json' }, SCRATCH_FIXTURE_ENTRY_ID), null);
+    assert.equal(filedTaskIdOf({ isError: false, text: '[]' }, SCRATCH_FIXTURE_ENTRY_ID), null);
+    // A `new` entry has filedTaskId null — same reading as an unreadable list,
+    // and safe only because `scratchFixtureUsable` needs an EQUAL match.
+    const unfiled = JSON.stringify([{ id: SCRATCH_FIXTURE_ENTRY_ID, filedTaskId: null }]);
+    assert.equal(filedTaskIdOf({ isError: false, text: unfiled }, SCRATCH_FIXTURE_ENTRY_ID), null);
+    assert.equal(scratchFixtureUsable({ reachOk: true, filedTaskId: null }), false);
   });
 });

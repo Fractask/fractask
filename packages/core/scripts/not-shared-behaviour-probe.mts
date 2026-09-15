@@ -167,6 +167,44 @@ export const MOVE_FIXTURE_TASK_ID = process.env.MOVE_FIXTURE_TASK_ID || 'RoG1lAE
 /** Where the fixture belongs. Both the precondition and the repair read this. */
 export const MOVE_FIXTURE_PARENT_ID = process.env.MOVE_FIXTURE_PARENT_ID || 'Tx5g85uLq96D';
 
+/**
+ * The `scratchpad_file` probe's fixture — a scratch entry this caller OWNS.
+ *
+ * `fileScratchEntry(ctx, id, {taskId})` (`src/scratchpad.ts`) has `move_task`'s
+ * assert order: `loadAccessible(ctx, id)` first, `assertAccessibleExists(ctx,
+ * input.taskId)` second. So the `id` slot must hold a row this caller can read
+ * and the two subjects go in `taskId`.
+ *
+ * ⚠️ **The assert order is only half the argument, and the half that does not
+ * decide anything** (precondition 17 on `F3JVD_0PuXGY`, earned by this row's
+ * predecessor). The other half is what the write LEAVES BEHIND in the world
+ * where the guard is missing, and for this row it is measured rather than
+ * argued: `npm run scratch-file-blast-radius`, 5 controls, all fired —
+ *
+ * ```
+ *   the unrefused write (status=filed, filed_task_id → a hidden task)
+ *     readable    get_scratch_entry(own entry)        → READABLE
+ *     enumerable  list(status='filed')                → 1
+ *     repairable  re-file to a readable task          → OK
+ *                 scratchpad_dismiss(id)              → filed_task_id null
+ *     ROW-CTL     row present, user_id still the caller
+ *     CONTRAST-CTL the SAME write to a NOTE           → NULL (orphaned)
+ * ```
+ *
+ * The mechanism is one line of the access rule: `scratch_entries.user_id` is an
+ * **ownership root**, so `loadAccessible` returns the row on ownership alone and
+ * never consults `filed_task_id`. `brain_notes` has no such root, which is why
+ * `update_note` is `UNSAFE-SUBJECT` and this row is not. That asymmetry, not
+ * the probe, is what the test pins.
+ *
+ * Fixture: `yWydSAPcmO6x`, whose own body records where it belongs, so it is
+ * self-describing if anyone finds it filed somewhere else.
+ */
+export const SCRATCH_FIXTURE_ENTRY_ID = process.env.SCRATCH_FIXTURE_ENTRY_ID || 'yWydSAPcmO6x';
+
+/** The readable task the fixture belongs filed under. The precondition and the repair both read this. */
+export const SCRATCH_FIXTURE_TASK_ID = process.env.SCRATCH_FIXTURE_TASK_ID || 'Tx5g85uLq96D';
+
 /** Search term for the `search_notes` probe — any substring; the SCOPE is what is under test. */
 const NOTE_SEARCH_TERM = 'a';
 
@@ -383,6 +421,23 @@ export const PROBES: Probe[] = [
     note: 'WRITE, DESTRUCTIVE — subject in newParentId; the id slot holds a row this caller owns',
     write: true,
   },
+  // `scratchpad_file(id=<fixture entry>, taskId=<subject>)` — the SECOND row
+  // whose subject argument is not the id being varied, and the first one drawn
+  // from a surface this card had never touched. Measured by hand against prod
+  // on 2026-09-15 06:2xZ before it was encoded: the REACH leg (filing the
+  // fixture to a task the caller CAN read) succeeded, then
+  // `not_shared: Task TfmR7QJFqluo not shared — …do not recreate it…` /
+  // `not_found: Task zzzNoSuch9XyZ not found`, both legs refused, and the
+  // fixture's `filedTaskId` re-read identical afterwards.
+  //
+  // Its safety is the one thing NOT taken from the assert order — see
+  // `SCRATCH_FIXTURE_ENTRY_ID` and `npm run scratch-file-blast-radius`.
+  {
+    tool: 'scratchpad_file',
+    args: (id) => ({ id: SCRATCH_FIXTURE_ENTRY_ID, taskId: id }),
+    note: 'WRITE — subject in taskId; the id slot holds a scratch entry this caller owns',
+    write: true,
+  },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
   // The NOTE surface. `scopeTaskId` IS a task id, so these two take the same
   // subject pair as `list_tasks` — the rows are the right kind of row without
@@ -508,14 +563,28 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  * for the reason a row was excluded reads as disposal, and nobody re-asks the
  * other questions of a row already explained.
  *
- * 🎯 **The replacement next row is `scratchpad_file`,** and its evidence is the
- * same kind: `fileScratchEntry(ctx, id, {taskId})` (`src/scratchpad.ts:207`)
- * calls `loadAccessible(ctx, id)` first and `assertAccessibleExists(ctx,
- * input.taskId)` second, so it is the `move_task` order — and unlike a note, the
- * `id` slot takes a scratchpad entry the caller can MINT for the probe with
- * `scratchpad_add`, whose filed state stays enumerable by
- * `scratchpad_list(status="filed")`. Unprobed here; named so the next runner
- * does not re-derive it.
+ * ✅ **Its replacement, `scratchpad_file`, is now a PROBED row** (2026-09-15
+ * 06:2xZ) — see `SCRATCH_FIXTURE_ENTRY_ID`. It has the same assert order, and
+ * the clause that decided it is the one `update_note` failed: the write leaves
+ * an artifact that is still readable, still enumerable and still repairable by
+ * this caller, because `scratch_entries.user_id` is an ownership root.
+ *
+ * ⚠️ **And that clause was measured, not inherited.** The receipt that named
+ * `scratchpad_file` also asserted *"whose filed state stays enumerable by
+ * `scratchpad_list(status='filed')`"* — true, as it turns out, but written from
+ * the code path, which is the move this card has been wrong about four times.
+ * `npm run scratch-file-blast-radius` asks it as three separate questions
+ * (readable / enumerable / repairable) against a throwaway DB. A named next row
+ * hands the following runner a conclusion and a reason; only the reason is
+ * transferable, and it still has to be run.
+ *
+ * 🎯 **The next candidate is `report_shipped(taskId=…)`,** and it is named as a
+ * CANDIDATE rather than as a lead, which is the whole point of the paragraph
+ * above. Its assert order is trivially right — one task-id argument, no fixture
+ * to design — and that settles nothing. The open question is the blast radius:
+ * an unrefused call writes a row into the HUMAN's shipped feed, which is the
+ * first probe on this table whose artifact lands in someone else's view rather
+ * than the caller's. Measure that before encoding it.
  */
 export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT'; reason: string; discharge: string }[] = [
   {
@@ -668,6 +737,58 @@ export function parentIdOf(a: { isError: boolean; text: string }): string | null
  */
 export function moveFixtureUsable(f: { reachOk: boolean; parentId: string | null }): boolean {
   return f.reachOk && f.parentId === MOVE_FIXTURE_PARENT_ID;
+}
+
+/**
+ * Where `scratchpad_list` says the fixture entry is filed, or null.
+ *
+ * ⚠️ Reads the entry OUT OF A LIST by id rather than taking row 0. There is no
+ * scalar getter for a scratch entry on the MCP surface, so the enumerator is
+ * the only reader — and an enumerator's first row is whatever sorted first,
+ * which on `scratchpad_list` is the newest entry and not necessarily ours.
+ */
+export function filedTaskIdOf(a: { isError: boolean; text: string }, entryId: string): string | null {
+  if (a.isError) return null;
+  try {
+    const parsed: unknown = JSON.parse(a.text);
+    if (!Array.isArray(parsed)) return null;
+    const row = (parsed as { id?: unknown; filedTaskId?: unknown }[]).find((r) => r.id === entryId);
+    return typeof row?.filedTaskId === 'string' ? row.filedTaskId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is the scratch entry usable as the `id` slot of the `scratchpad_file` probe?
+ *
+ * Same two-leg shape as `moveFixtureUsable`, and for the same reason. `reachOk`
+ * says the call got past `loadAccessible` into the handler body, so a later
+ * `CONFLATES` on this row is a reading of the access layer. The `filedTaskId`
+ * leg says the fixture is where it belongs — if a previous run left it filed
+ * somewhere else, this run must not quietly measure against a subject an
+ * earlier probe already moved.
+ */
+export function scratchFixtureUsable(f: { reachOk: boolean; filedTaskId: string | null }): boolean {
+  return f.reachOk && f.filedTaskId === SCRATCH_FIXTURE_TASK_ID;
+}
+
+/**
+ * Which probe rows must be SKIPPED this run, given each fixture's precondition.
+ *
+ * Pure and exported for one reason, and it is a rule this file earned the hard
+ * way: the first version of the skip decision lived inline in `main()`, and an
+ * ablation that removed it came back GREEN — not because the control was dead
+ * but because no test could reach the branch (precondition 13 on
+ * `F3JVD_0PuXGY`). `probedNamesFor` was extracted then. This is the same
+ * extraction for the other half of the decision, done BEFORE a second fixture
+ * row made the inline version a two-case conditional.
+ */
+export function probesToSkip(f: { moveFixtureOk: boolean; scratchFixtureOk: boolean }): string[] {
+  const skip: string[] = [];
+  if (!f.moveFixtureOk) skip.push('move_task');
+  if (!f.scratchFixtureOk) skip.push('scratchpad_file');
+  return skip;
 }
 
 /**
@@ -972,6 +1093,16 @@ export function decide(args: {
    */
   moveFixtureMoved?: boolean;
   /**
+   * Optional and defaulted to `false` so existing callers are unchanged: is the
+   * scratch fixture filed somewhere other than where it started?
+   *
+   * The STATE leg of the `scratchpad_file` probe, and separate from `landed`
+   * for exactly the reason the move one is: `landed` reads the ANSWER, this
+   * reads the WORLD, and a build can get those two out of step in either
+   * direction. Ordered with the move leg, ahead of WRITE-SAFETY.
+   */
+  scratchFixtureMoved?: boolean;
+  /**
    * Optional and defaulted to absent so existing callers are unchanged: the
    * DERIVED population the probed set is a subset of. Supply it and the verdict
    * gains its second term; omit it and the verdict is exactly what it was —
@@ -996,6 +1127,17 @@ export function decide(args: {
         `the move fixture (${MOVE_FIXTURE_TASK_ID}) is NOT where it was before this run — a move_task probe LANDED. ` +
         `It belongs under ${MOVE_FIXTURE_PARENT_ID}; this run attempts the repair and reports whether it took. ` +
         'Treat every row above as measured against a target this run changed',
+      ...base,
+    };
+  }
+
+  if (args.scratchFixtureMoved) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        `the scratch fixture (${SCRATCH_FIXTURE_ENTRY_ID}) is NOT filed where it was before this run — a ` +
+        `scratchpad_file probe LANDED. It belongs under ${SCRATCH_FIXTURE_TASK_ID}; this run attempts the repair ` +
+        'and reports whether it took. Treat every row above as measured against a target this run changed',
       ...base,
     };
   }
@@ -1213,6 +1355,12 @@ async function main(): Promise<number> {
   let moveFixtureReachOk = false;
   let moveFixtureOk = false;
   let moveFixtureRepaired: boolean | null = null;
+  // SCRATCH-FIXTURE control state, all of it printed every run.
+  let scratchFiledBefore: string | null = null;
+  let scratchFiledAfter: string | null = null;
+  let scratchReachOk = false;
+  let scratchFixtureOk = false;
+  let scratchFixtureRepaired: boolean | null = null;
   const skippedProbes: string[] = [];
 
   if (subjectControlOk) {
@@ -1239,14 +1387,27 @@ async function main(): Promise<number> {
     moveFixtureReachOk = !reach.isError;
     moveFixtureOk = moveFixtureUsable({ reachOk: moveFixtureReachOk, parentId: moveFixtureParentBefore });
 
+    // SCRATCH-FIXTURE control, both legs, BEFORE the scratchpad_file probe is
+    // allowed to run. Same two questions as the move fixture: does the call
+    // reach the handler body (REACH — re-file the fixture to the readable task
+    // it already sits under, the most boring write available), and is the
+    // fixture where it belongs to begin with.
+    const scratchPre = await callTool(url, auth, 'scratchpad_list', { status: 'all', scope: 'mine', limit: 200 });
+    scratchFiledBefore = filedTaskIdOf(scratchPre, SCRATCH_FIXTURE_ENTRY_ID);
+    const scratchReach = await callTool(url, auth, 'scratchpad_file', {
+      id: SCRATCH_FIXTURE_ENTRY_ID,
+      taskId: SCRATCH_FIXTURE_TASK_ID,
+    });
+    scratchReachOk = !scratchReach.isError;
+    scratchFixtureOk = scratchFixtureUsable({ reachOk: scratchReachOk, filedTaskId: scratchFiledBefore });
+
+    // A row whose fixture precondition failed is NOT probed, and therefore not
+    // in the probed set the frame is built from — it goes back on the to-do
+    // list rather than becoming a row with no reading behind it.
+    skippedProbes.push(...probesToSkip({ moveFixtureOk, scratchFixtureOk }));
+
     for (const p of PROBES) {
-      if (p.tool === 'move_task' && !moveFixtureOk) {
-        // Not probed, and therefore NOT in the probed set the frame is built
-        // from — move_task goes back on the to-do list rather than becoming a
-        // row with no reading behind it.
-        skippedProbes.push('move_task');
-        continue;
-      }
+      if (skippedProbes.includes(p.tool)) continue;
       const notShared = await callTool(url, auth, p.tool, p.args(NOT_SHARED_TASK_ID));
       const neverReal = await callTool(url, auth, p.tool, p.args(NEVER_REAL_TASK_ID));
       rows.push({
@@ -1318,6 +1479,20 @@ async function main(): Promise<number> {
       });
       moveFixtureRepaired = parentIdOf(recheck) === moveFixtureParentBefore;
     }
+
+    // The same STATE leg for the scratch fixture. Read even when the row was
+    // skipped — the REACH leg is itself a file, so the question is live either
+    // way.
+    const scratchPost = await callTool(url, auth, 'scratchpad_list', { status: 'all', scope: 'mine', limit: 200 });
+    scratchFiledAfter = filedTaskIdOf(scratchPost, SCRATCH_FIXTURE_ENTRY_ID);
+    if (scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore) {
+      await callTool(url, auth, 'scratchpad_file', {
+        id: SCRATCH_FIXTURE_ENTRY_ID,
+        taskId: scratchFiledBefore,
+      });
+      const recheck = await callTool(url, auth, 'scratchpad_list', { status: 'all', scope: 'mine', limit: 200 });
+      scratchFixtureRepaired = filedTaskIdOf(recheck, SCRATCH_FIXTURE_ENTRY_ID) === scratchFiledBefore;
+    }
   }
 
   // The FRAME is derived from the registry, not from the run, so it is computed
@@ -1337,6 +1512,7 @@ async function main(): Promise<number> {
     scopeReaderControlOk,
     moveFixtureMoved:
       moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore,
+    scratchFixtureMoved: scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore,
     frame,
   });
   const code =
@@ -1415,6 +1591,21 @@ async function main(): Promise<number> {
             : moveFixtureOk
               ? `   ✅ unchanged; REACH leg ${moveFixtureReachOk ? 'reached the handler' : 'did NOT'}`
               : '   ⚪ unusable — move_task NOT probed this run, and is back on the to-do list'),
+    );
+  }
+  {
+    // The scratch fixture's STATE leg, same shape and same reason as MOVE CTL.
+    const moved = scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore;
+    console.log(
+      `  SCRAT CTL   fixture ${SCRATCH_FIXTURE_ENTRY_ID} filed ${scratchFiledBefore ?? 'unreadable'} → ` +
+        `${scratchFiledAfter ?? 'unreadable'}` +
+        (!subjectControlOk
+          ? '   — not run (subject control failed first)'
+          : moved
+            ? `   ⛔ REFILED — a scratchpad_file probe landed; repair ${scratchFixtureRepaired ? 'took ✅' : 'FAILED ⛔ — re-file it by hand'}`
+            : scratchFixtureOk
+              ? `   ✅ unchanged; REACH leg ${scratchReachOk ? 'reached the handler' : 'did NOT'}`
+              : '   ⚪ unusable — scratchpad_file NOT probed this run, and is back on the to-do list'),
     );
   }
   {

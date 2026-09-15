@@ -306,3 +306,62 @@ describe('NotSharedScratchError — "not yours" is not "not there", one object t
     assert.ok(NOT_SHARED_MESSAGE.includes('Ask its owner to share it'));
   });
 });
+
+/**
+ * The property that makes `scratchpad_file` a probeable row on
+ * `not-shared-behaviour-probe` while `update_note` — which has the IDENTICAL
+ * assert order — is `UNSAFE-SUBJECT`.
+ *
+ * What is pinned here is the ACCESS RULE, not the probe: `scratch_entries` has
+ * an ownership root (`user_id`), and `loadAccessible` never consults
+ * `filed_task_id`, so no filing target can take an entry out of its owner's
+ * reach. `brain_notes` has no such root — `(scope_task_id IS NULL AND user_id =
+ * caller) OR scope_task_id IN accessible` — which is why the same write orphans
+ * a note (`npm run note-scope-blast-radius`).
+ *
+ * A future schema change that couples entry visibility to `filed_task_id` reds
+ * this, and that is exactly the moment someone must be told the probe row is no
+ * longer safe. Precondition 17(b) on `F3JVD_0PuXGY`.
+ */
+describe('an entry filed under a task the owner cannot read is still the owner\'s', () => {
+  it('stays readable, enumerable and repairable — measured through the public functions', async () => {
+    const hidden = await createTask(stranger, { title: 'a task joel cannot read', kind: 'project' });
+    const mine = await createScratchEntry(joel, { body: 'blast radius fixture' });
+    const home = await createTask(joel, { title: 'a task joel owns', kind: 'project' });
+
+    // PRECONDITION, asserted rather than assumed: joel really cannot read the
+    // filing target. Without this the three readings below are a test that
+    // already passed. Precondition 16.
+    await assert.rejects(() => fileScratchEntry(joel, mine.id, { taskId: hidden.id }), NotSharedError);
+
+    // The world where the guard is missing, reached the only way the public
+    // API allows: an admin CAN file it there, and the entry is still joel's.
+    await fileScratchEntry(jibin, mine.id, { taskId: hidden.id });
+
+    // 1 · readable
+    const read = await getScratchEntry(joel, mine.id);
+    assert.ok(read, 'the owner can still fetch it');
+    assert.equal(read.filedTaskId, hidden.id);
+    // 2 · enumerable
+    const filed = await listScratchEntries(joel, { status: 'filed', limit: 500 });
+    assert.ok(filed.some((e) => e.id === mine.id), 'the owner can still enumerate it');
+    // 3 · repairable, on the owner's OWN tools, both paths
+    await dismissScratchEntry(joel, mine.id, { note: 'cleared' });
+    assert.equal((await getScratchEntry(joel, mine.id))?.filedTaskId, null);
+    await fileScratchEntry(joel, mine.id, { taskId: home.id });
+    assert.equal((await getScratchEntry(joel, mine.id))?.filedTaskId, home.id);
+  });
+
+  it('the repair path does NOT require reaching the bad target — that is what orphans a note', async () => {
+    // `update_note(id, {scopeTaskId: null})` refuses on the note's own access
+    // assert once the scope is hidden, so the repair is unreachable. The
+    // scratch equivalent asserts on `user_id`, so it is always reachable.
+    const hidden = await createTask(stranger, { title: 'another hidden task', kind: 'project' });
+    const mine = await createScratchEntry(joel, { body: 'repair reachability' });
+    await fileScratchEntry(jibin, mine.id, { taskId: hidden.id });
+    await updateScratchEntry(joel, mine.id, { status: 'new' });
+    const back = await getScratchEntry(joel, mine.id);
+    assert.equal(back?.status, 'new');
+    assert.equal(back?.filedTaskId, null);
+  });
+});
