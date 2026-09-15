@@ -1036,7 +1036,7 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  */
 export const UNPROBEABLE: {
   tool: string;
-  kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT' | 'THIRD-PARTY-ARTIFACT';
+  kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT' | 'THIRD-PARTY-ARTIFACT' | 'COMPLEMENTARY-SUBJECT';
   reason: string;
   discharge: string;
 }[] = [
@@ -1090,6 +1090,23 @@ export const UNPROBEABLE: {
       'the caller can neither read, enumerate nor delete it — measured, `npm run report-shipped-blast-radius`',
     discharge:
       'a focus-event reader scoped to the CALLER (the MCP surface has none at all today), or a build whose access assert can be read directly',
+  },
+  // `scratchpad_dismiss` — the last row on the to-do list carrying NO reason at
+  // all. The 13:3xZ hand-off named the question to ask first and guessed it was
+  // the `delete_note` shape (a missing enumerator). It is not: the enumerator
+  // EXISTS. Measured in `scripts/scratch-subject-reachability-probe.mts`
+  // (`npm run scratch-subject-reachability`), 6 legs + 4 controls, all fired.
+  {
+    tool: 'scratchpad_dismiss',
+    kind: 'COMPLEMENTARY-SUBJECT',
+    reason:
+      'the id and the error live in COMPLEMENTARY populations, both gated on the SAME predicate: a non-admin can be ' +
+      'refused (scratchpad.ts:95) but enumerates 0 foreign entries, an admin enumerates all of them (:150) but is ' +
+      'returned the row before the refusal is reached (:94). And the damage is a FOURTH shape — nothing is created, a ' +
+      'human\'s existing idea row is flipped new→dismissed with the prober as filedBy, so a marker-shaped WRITE-SAFETY ' +
+      'control cannot see it and the prober cannot undo it — measured, `npm run scratch-subject-reachability`',
+    discharge:
+      'NOT_SHARED_SCRATCH_ID (which discharges the subject half ONLY) plus a detector for a mutation the prober cannot enumerate',
   },
 ];
 

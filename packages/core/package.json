@@ -35,6 +35,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "report-shipped-blast-radius": "tsx scripts/report-shipped-blast-radius-probe.mts",
+    "scratch-subject-reachability": "tsx scripts/scratch-subject-reachability-probe.mts",
     "afu-order": "tsx scripts/attach-from-url-order-probe.mts"
   },
   "dependencies": {

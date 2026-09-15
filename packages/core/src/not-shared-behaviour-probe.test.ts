@@ -957,7 +957,7 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
   it('names all three remaining tools, each with a reason and a discharge', () => {
     assert.deepEqual(
       UNPROBEABLE.map((u) => u.tool).sort(),
-      ['delete_note', 'delete_task', 'move_note', 'report_shipped', 'update_note'],
+      ['delete_note', 'delete_task', 'move_note', 'report_shipped', 'scratchpad_dismiss', 'update_note'],
     );
     for (const u of UNPROBEABLE) {
       assert.ok(u.reason.length > 0, `${u.tool} needs a reason`);
@@ -1014,12 +1014,52 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
     assert.match(rs.discharge, /reader scoped to the CALLER|access assert can be read directly/);
   });
 
-  it('the three kinds are three different reasons, and each is used by at least one row', () => {
-    // RULE 36's shape: a bucket named for a REASON reads as disposal. Three
-    // distinct kinds keep the reasons from collapsing into "deferred", which is
-    // what happened when all four were "destructive paths".
+  it('the kinds are all different reasons, and each is used by at least one row', () => {
+    // RULE 36's shape: a bucket named for a REASON reads as disposal. Distinct
+    // kinds keep the reasons from collapsing into "deferred", which is what
+    // happened when all four were "destructive paths".
     const kinds = new Set(UNPROBEABLE.map((u) => u.kind));
-    assert.deepEqual([...kinds].sort(), ['NOTE-SUBJECT', 'THIRD-PARTY-ARTIFACT', 'UNSAFE-SUBJECT']);
+    assert.deepEqual(
+      [...kinds].sort(),
+      ['COMPLEMENTARY-SUBJECT', 'NOTE-SUBJECT', 'THIRD-PARTY-ARTIFACT', 'UNSAFE-SUBJECT'],
+    );
+  });
+
+  it('scratchpad_dismiss is a FOURTH shape — the subject and the refusal exclude each other', () => {
+    // The 13:3xZ hand-off left it as the only unprobed tool with no reason at
+    // all, and guessed it was the delete_note shape: "a share-scoped caller
+    // cannot find one". Measured (`npm run scratch-subject-reachability`, 6
+    // legs, 4 controls, all fired) it is NOT that shape — the enumerator
+    // EXISTS and returns the row. It is gated on the same isAdmin() predicate
+    // that makes the refusal unreachable, so whoever can hold the id cannot be
+    // refused by it and whoever can be refused cannot hold the id.
+    const sd = UNPROBEABLE.find((u) => u.tool === 'scratchpad_dismiss')!;
+    assert.equal(sd.kind, 'COMPLEMENTARY-SUBJECT');
+    assert.match(sd.reason, /COMPLEMENTARY populations/);
+    assert.match(sd.reason, /scratch-subject-reachability/, 'the reason must name the command that measured it');
+    assert.ok(
+      !PROBES.some((p) => p.tool === 'scratchpad_dismiss'),
+      'scratchpad_dismiss must not be a probed row — an unrefused call mutates a human idea row with no undo',
+    );
+    // The discharge must say the env var is only HALF of it. `delete_note`
+    // already carries that lesson for the note rows; here it matters more,
+    // because the subject half looks like the whole blocker and an env var is
+    // the cheapest thing on the list to reach for.
+    assert.match(sd.discharge, /NOT_SHARED_SCRATCH_ID/);
+    assert.match(sd.discharge, /ONLY/, 'the discharge must say the subject half is not the whole price');
+    assert.match(sd.discharge, /detector/);
+  });
+
+  it('the damage it describes is a MUTATION, so a marker-shaped detector cannot see it', () => {
+    // Every other write row on this table leaves a row that was CREATED, and
+    // WRITE-SAFETY finds it by a marker this caller wrote. dismissScratchEntry
+    // creates nothing — it flips an existing row's status. A reason that did
+    // not say so would invite the next runner to reach for the marker control
+    // that makes the other seven write probes defensible.
+    const sd = UNPROBEABLE.find((u) => u.tool === 'scratchpad_dismiss')!;
+    assert.match(sd.reason, /nothing is created/i);
+    assert.match(sd.reason, /flipped new→dismissed/);
+    assert.match(sd.reason, /filedBy/, 'the reason must name the field that records WHO did it');
   });
 
   it('says out loud that WRITE-SAFETY cannot cover a delete', () => {
