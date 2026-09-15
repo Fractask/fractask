@@ -37,6 +37,12 @@ import {
   adminGateStillClosed,
   adminGateProbeArgs,
   PROBE_UPLOAD_FILENAME,
+  UNPROBEABLE,
+  MOVE_FIXTURE_TASK_ID,
+  MOVE_FIXTURE_PARENT_ID,
+  moveFixtureUsable,
+  probedNamesFor,
+  parentIdOf,
   type Row,
   type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
@@ -379,7 +385,19 @@ describe('the probed set', () => {
     // The WRITE-SAFETY control is only as wide as this flag: a write probe
     // added without it is watched by nothing.
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
-    assert.deepEqual(writes, ['attach_file', 'create_note', 'create_task', 'create_upload', 'post_comment', 'update_task']);
+    assert.deepEqual(writes, [
+      'attach_file',
+      'create_note',
+      'create_task',
+      'create_upload',
+      // Added 2026-09-15 03:4xZ. This pin FIRED on the addition, which is what
+      // it is for: a write probe that arrives without the flag is watched by
+      // nothing, and move_task is the one row on this table whose miss is a
+      // DESTRUCTIVE write rather than a stray row.
+      'move_task',
+      'post_comment',
+      'update_task',
+    ]);
     for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
       assert.ok(!PROBES.find((p) => p.tool === readOnly)!.write, `${readOnly} is a read and must not be flagged`);
     }
@@ -600,13 +618,28 @@ describe('the frame, against the REAL registry — the numbers a receipt may quo
     assert.equal(referentOf('provision_agent', 'shareTaskId'), 'task');
   });
 
-  it('does not count move_task as unprobed-and-safe — it is at-risk on BEHAVIOUR', () => {
-    // This card's rules keep move_task UNDOCUMENTED as the doc-half NEG-CTL.
-    // That is the prose axis. The frame is the behaviour axis, and on that axis
-    // move_task takes two task ids and is at-risk. Nothing here touches its
-    // description.
+  it('move_task is at-risk on BEHAVIOUR and PROBED — while its DESCRIPTION stays the doc-half NEG-CTL', () => {
+    // ⚠️ This assertion was inverted on 2026-09-15 03:4xZ and the inversion is
+    // the point, not an accident to be smoothed over. Until this hour it read
+    // `unprobed.includes('move_task')` — true because nobody had designed a
+    // safe subject for a destructive tool. The row is now probed, so that
+    // clause had to go, and a test edited to stay green is exactly the hazard
+    // this repo's notes warn about. So what replaces it is the clause that was
+    // always the load-bearing one: the two axes must not leak into each other.
+    //
+    // BEHAVIOUR axis — move_task takes two task ids, is at-risk, and is now
+    // measured against the real subject pair.
     assert.ok(real.atRisk.includes('move_task'));
-    assert.ok(real.unprobed.includes('move_task'));
+    assert.ok(real.probed.includes('move_task'));
+    assert.ok(!real.unprobed.includes('move_task'));
+    // DOC axis — untouched. `tasks.test.ts` uses move_task's description as the
+    // NEG-CTL proving the documentation matcher can report a tool as
+    // undocumented; probing what a tool ANSWERS must never edit what it SAYS.
+    const t = (TOOLS as unknown as { name: string; description?: string }[]).find((x) => x.name === 'move_task')!;
+    assert.ok(
+      !String(t.description ?? '').includes('not_shared'),
+      'move_task must stay undocumented — it is the doc-half NEG-CTL in tasks.test.ts',
+    );
   });
 });
 
@@ -780,5 +813,180 @@ describe('ADMIN-GATED — a control answered before it reaches the subject is no
       assert.ok(!PROBES.some((p) => p.tool === g.tool), `${g.tool} is deferred; it must not also be probed`);
       assert.ok(!DEFERRED.some((d) => d.tool === g.tool), `${g.tool} is admin-gated, not subject-deferred`);
     }
+  });
+});
+
+describe('move_task — the first DESTRUCTIVE row, and why its subject sits in the OTHER slot', () => {
+  const move = PROBES.find((p) => p.tool === 'move_task');
+
+  it('is probed, and probed as a WRITE', () => {
+    assert.ok(move, 'move_task must be in PROBES — it was the only one of the destructive four with a safe design');
+    assert.equal(move!.write, true);
+  });
+
+  it('puts the VARYING subject in newParentId and a caller-owned row in the id slot', () => {
+    // moveTask asserts `id` FIRST (src/tasks.ts:792) and `newParentId` second.
+    // A never-real id in the `id` slot short-circuits on the first assert, so
+    // both legs would answer not_found and the row would read CONFLATES off an
+    // assert that has nothing to do with the destination. This is the whole
+    // design and it is forced by the source, not chosen.
+    const args = move!.args('SUBJECT') as { id: string; newParentId: string };
+    assert.equal(args.newParentId, 'SUBJECT', 'the subject under test must be the DESTINATION');
+    assert.equal(args.id, MOVE_FIXTURE_TASK_ID, 'the id slot must hold the caller-owned fixture');
+    assert.notEqual(args.id, 'SUBJECT');
+  });
+
+  it('bounds the blast radius to a row this caller can read and put back', () => {
+    // The fixture's expected parent is what the repair path restores to, and
+    // what the precondition compares against. Without it a probe that landed
+    // would be detected and then left where it landed.
+    assert.ok(MOVE_FIXTURE_PARENT_ID.length > 0);
+    assert.notEqual(MOVE_FIXTURE_TASK_ID, NOT_SHARED_TASK_ID);
+    assert.notEqual(MOVE_FIXTURE_TASK_ID, NEVER_REAL_TASK_ID);
+  });
+
+  it('refuses to probe on an unusable fixture rather than publishing a row with no reading behind it', () => {
+    assert.equal(moveFixtureUsable({ reachOk: true, parentId: MOVE_FIXTURE_PARENT_ID }), true);
+    // REACH failed: the call never got to move_task's handler, so a verdict off
+    // it would be a reading of whatever answered first (RULE 37).
+    assert.equal(moveFixtureUsable({ reachOk: false, parentId: MOVE_FIXTURE_PARENT_ID }), false);
+    // Fixture already somewhere else: a PREVIOUS run landed a write nobody
+    // repaired. Probing over it would quietly ratify that.
+    assert.equal(moveFixtureUsable({ reachOk: true, parentId: 'somewhereElse' }), false);
+    assert.equal(moveFixtureUsable({ reachOk: true, parentId: null }), false);
+  });
+
+  it('reads the STATE, not just the answer — the two can disagree on a move', () => {
+    // `landed` fires on a non-error reply. This leg fires on the world having
+    // changed. A build that moved the row and still answered with an error is
+    // reported by nothing else in this file.
+    const clean = [row('get_task', 'NOT_SHARED', 'NOT_FOUND')];
+    const v = decide({
+      rows: clean,
+      subjectControlOk: true,
+      authControlSameAsReal: false,
+      classifierControlOk: true,
+      moveFixtureMoved: true,
+    });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /NOT where it was before this run/);
+    assert.match(v.reason, new RegExp(MOVE_FIXTURE_TASK_ID));
+  });
+
+  it('the state leg outranks every other control, including the answer leg', () => {
+    // Ordering matters: a run that CHANGED the target must not be reported as
+    // "the subject control failed", which reads as "this run measured nothing".
+    const v = decide({
+      rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')],
+      subjectControlOk: false,
+      authControlSameAsReal: true,
+      classifierControlOk: false,
+      moveFixtureMoved: true,
+    });
+    assert.match(v.reason, /NOT where it was before this run/);
+  });
+
+  it('defaults to not-moved, so an older caller is unchanged', () => {
+    const v = decide({
+      rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')],
+      subjectControlOk: true,
+      authControlSameAsReal: false,
+      classifierControlOk: true,
+    });
+    assert.notEqual(v.status, 'INCONCLUSIVE');
+  });
+
+  it('parentIdOf keeps "could not read it" distinct from "read it, it is elsewhere"', () => {
+    assert.equal(parentIdOf({ isError: false, text: '{"id":"a","parentId":"P1"}' }), 'P1');
+    // A top-level task really has no parent — but so does an error and so does
+    // an unparseable body, and only one of those three is a fact about the row.
+    // Collapsing them is safe HERE only because `moveFixtureUsable` requires an
+    // EQUAL match against a non-empty expected parent, so null never passes.
+    assert.equal(parentIdOf({ isError: true, text: 'not_found: Task x not found' }), null);
+    assert.equal(parentIdOf({ isError: false, text: 'not json' }), null);
+    assert.equal(parentIdOf({ isError: false, text: '{"id":"a","parentId":null}' }), null);
+    assert.equal(moveFixtureUsable({ reachOk: true, parentId: null }), false);
+  });
+});
+
+describe('the destructive four were THREE reasons, not one bucket', () => {
+  it('names all three remaining tools, each with a reason and a discharge', () => {
+    assert.deepEqual(
+      UNPROBEABLE.map((u) => u.tool).sort(),
+      ['delete_note', 'delete_task', 'move_note'],
+    );
+    for (const u of UNPROBEABLE) {
+      assert.ok(u.reason.length > 0, `${u.tool} needs a reason`);
+      assert.ok(u.discharge.length > 0, `${u.tool} needs a discharge — a limit with no price closes the conversation`);
+    }
+  });
+
+  it('separates the DESTRUCTIVE reason from the SUBJECT reason — only one of the three is about destructiveness', () => {
+    // The 02:4xZ receipt filed all four under "destructive paths". Designing
+    // the fix split it: move_task is probed, delete_task is unsafe, and the two
+    // note rows are blocked one step earlier, on a subject that does not exist
+    // for this caller at all.
+    const byTool = Object.fromEntries(UNPROBEABLE.map((u) => [u.tool, u.kind]));
+    assert.equal(byTool['delete_task'], 'UNSAFE-SUBJECT');
+    assert.equal(byTool['move_note'], 'NOTE-SUBJECT');
+    assert.ok(!UNPROBEABLE.some((u) => u.tool === 'move_task'), 'move_task is probed, not deferred');
+  });
+
+  it('says out loud that WRITE-SAFETY cannot cover a delete', () => {
+    // The control that makes the other write probes defensible is a DETECTOR.
+    // For a delete on an unreadable subject there is nothing to detect with and
+    // nothing to restore from, and a deferral that does not say so invites the
+    // next runner to "just add the row like create_task".
+    const del = UNPROBEABLE.find((u) => u.tool === 'delete_task')!;
+    assert.match(del.reason, /WRITE-SAFETY detects, it does not prevent/);
+  });
+
+  it('they stay AT-RISK and stay COUNTED — RULE 36, the same as the admin rows', () => {
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], PROBES.map((p) => p.tool));
+    for (const u of UNPROBEABLE) {
+      assert.ok(frame.atRisk.includes(u.tool), `${u.tool} must remain in the AT-RISK denominator`);
+      assert.ok(frame.unprobed.includes(u.tool), `${u.tool} must remain in the unprobed to-do list`);
+    }
+  });
+
+  it('no tool is claimed by two lists at once', () => {
+    for (const u of UNPROBEABLE) {
+      assert.ok(!PROBES.some((p) => p.tool === u.tool), `${u.tool} is deferred; it must not also be probed`);
+      assert.ok(!DEFERRED.some((d) => d.tool === u.tool), `${u.tool} is not discharged by an env var alone`);
+      assert.ok(!ADMIN_GATED.some((g) => g.tool === u.tool), `${u.tool} is not admin-gated`);
+    }
+  });
+
+  it('every one of them is a real registered tool — a deferral aimed at nothing is not a deferral', () => {
+    for (const u of UNPROBEABLE) {
+      assert.ok(
+        (TOOLS as unknown as RegisteredTool[]).some((t) => t.name === u.tool),
+        `${u.tool} must exist in the registry`,
+      );
+    }
+  });
+});
+
+describe('a SKIPPED probe is not a probed tool — the branch an ablation found untested', () => {
+  it('counts every intended probe when nothing was skipped', () => {
+    const names = probedNamesFor([]);
+    assert.ok(names.includes('move_task'));
+    for (const d of DEFERRED) assert.ok(names.includes(d.tool), `${d.tool} is named, and named is what DEFERRED means`);
+  });
+
+  it('puts a skipped tool back on the to-do list instead of counting it as covered', () => {
+    // PROBES is a list of INTENTIONS. A row whose subject was unusable was
+    // never asked, and this is the only thing standing between that and a
+    // coverage figure that counts it.
+    const names = probedNamesFor(['move_task']);
+    assert.ok(!names.includes('move_task'));
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], names);
+    assert.ok(frame.unprobed.includes('move_task'));
+    assert.ok(!frame.probed.includes('move_task'));
+  });
+
+  it('skipping one row does not disturb the others', () => {
+    const names = probedNamesFor(['move_task']);
+    for (const t of ['get_task', 'list_tasks', 'create_upload']) assert.ok(names.includes(t));
   });
 });

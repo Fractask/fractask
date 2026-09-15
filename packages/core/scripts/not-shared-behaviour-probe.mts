@@ -129,6 +129,44 @@ export const NEVER_REAL_TASK_ID = process.env.NEVER_REAL_TASK_ID || 'zzzNoSuch9X
 /** An id that was never a NOTE row — the never-real leg for any deferred note probe. */
 export const NEVER_REAL_NOTE_ID = process.env.NEVER_REAL_NOTE_ID || 'zzzNoNote9XyZ';
 
+/**
+ * ## The move fixture — a subject this caller OWNS, so a destructive tool can be probed at all
+ *
+ * `move_task` is one of the four destructive at-risk tools the 2026-09-15 02:4xZ
+ * receipt left as "needs a safe subject designed". It is the only one of the
+ * four for which a safe design exists, and the design is forced by the order of
+ * the asserts rather than chosen:
+ *
+ * ```
+ *   moveTask(ctx, id, newParentId)          src/tasks.ts:792
+ *     await assertAccessibleExists(ctx, id)          ← FIRST
+ *     if (newParentId !== null)
+ *       await assertAccessibleExists(ctx, newParentId)  ← SECOND: the leg under test
+ * ```
+ *
+ * A never-real id in the `id` slot short-circuits on the first assert and the
+ * second is never reached — both legs would answer `not_found` and the row
+ * would read `CONFLATES` off an assert that has nothing to do with the
+ * destination. So the `id` slot has to hold a row this caller can read, and the
+ * two subjects go in `newParentId`.
+ *
+ * **That is what bounds the blast radius, and it is the whole reason this row
+ * is probeable while `delete_task` is not.** In the world where the guard is
+ * missing, the thing that moves is THIS row — a task this caller owns, whose
+ * original parent is known, so the damage is both visible and reversible. On a
+ * `delete_task` probe the destructive act lands on the not-shared subject
+ * itself: a row this caller cannot read, cannot enumerate afterwards and cannot
+ * restore. See `UNPROBEABLE`.
+ *
+ * Fixture: `RoG1lAE_B1xg`, a `backlog` child of `Tx5g85uLq96D` whose own
+ * description records the expected parent, so the fixture is self-describing if
+ * anyone finds it somewhere else.
+ */
+export const MOVE_FIXTURE_TASK_ID = process.env.MOVE_FIXTURE_TASK_ID || 'RoG1lAE_B1xg';
+
+/** Where the fixture belongs. Both the precondition and the repair read this. */
+export const MOVE_FIXTURE_PARENT_ID = process.env.MOVE_FIXTURE_PARENT_ID || 'Tx5g85uLq96D';
+
 /** Search term for the `search_notes` probe — any substring; the SCOPE is what is under test. */
 const NOTE_SEARCH_TERM = 'a';
 
@@ -326,6 +364,25 @@ export const PROBES: Probe[] = [
     note: 'WRITE — mints a signed write grant; an unrefused answer leaves no artifact to find',
     write: true,
   },
+  // `move_task(id=<fixture>, newParentId=<subject>)` — the first DESTRUCTIVE
+  // tool on this table, and the only one of the four that a safe subject can be
+  // designed for. Measured by hand against prod on 2026-09-15 03:4xZ before it
+  // was encoded: the REACH leg (a no-op move of the fixture to its own current
+  // parent) succeeded, then NOT_SHARED / NOT_FOUND, both legs refused, and the
+  // fixture's `parentId` re-read identical afterwards.
+  //
+  // Two things make this row different from the six write probes above it.
+  // The subject argument is NOT the id being varied — see `MOVE_FIXTURE_TASK_ID`
+  // for why the assert order forces that. And its safety control has a second
+  // leg: `landed` reads the ANSWER, and for a move the answer and the world can
+  // disagree, so the fixture's parent is read before and after and compared.
+  // A control that counts the event cannot see the state.
+  {
+    tool: 'move_task',
+    args: (id) => ({ id: MOVE_FIXTURE_TASK_ID, newParentId: id }),
+    note: 'WRITE, DESTRUCTIVE — subject in newParentId; the id slot holds a row this caller owns',
+    write: true,
+  },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
   // The NOTE surface. `scopeTaskId` IS a task id, so these two take the same
   // subject pair as `list_tasks` — the rows are the right kind of row without
@@ -359,6 +416,82 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
     tool: 'get_note',
     reason: 'needs a NOT-SHARED *note* subject; a task id is not a note id, and a share-scoped caller cannot find one',
     envVar: 'NOT_SHARED_NOTE_ID',
+  },
+];
+
+/**
+ * ## The other three of "the destructive four" — and they are THREE DIFFERENT REASONS
+ *
+ * The 2026-09-15 02:4xZ receipt closed with a single bucket: *"what is left is
+ * dominated by destructive paths (`delete_task`, `delete_note`, `move_task`,
+ * `move_note`) where the not-shared leg damages a card this caller cannot read
+ * … the next commit has to design a safe subject for the destructive four."*
+ *
+ * Designing it split the bucket. One of the four turned out to be probeable
+ * (`move_task`, above), and the other three are blocked for reasons that have
+ * nothing to do with each other — only ONE of which is about destructiveness:
+ *
+ * ```
+ *   move_task    ✅ PROBED   a caller-owned row fits the id slot; subject goes in newParentId
+ *   delete_task  ⛔ UNSAFE   the destructive act lands ON the not-shared subject; no second slot
+ *   delete_note  ⛔ NOTE     every id it takes is a NOTE id — and it is also destructive
+ *   move_note    ⛔ NOTE     every id it takes is a NOTE id (id + newParentNoteId)
+ * ```
+ *
+ * **Why `delete_task` has no safe design, stated as a property and not as a
+ * preference.** `deleteTask(ctx, id)` takes one id and that id is the subject.
+ * There is no slot to put a caller-owned row in, so the only probe that reaches
+ * the access assert is a real delete aimed at a task this caller cannot see.
+ * The WRITE-SAFETY control cannot cover it either, and the reason is worth
+ * writing down because that control is what makes the other six write probes
+ * defensible: it is a **detector**, not a preventer — it reports a landed write
+ * after the fact so a human can go and undo it. For a delete on an unreadable
+ * subject there is nothing to detect it with (no enumerator of this caller's
+ * reaches the row) and nothing to restore it from. A safety control whose
+ * remedy is "go and look for the artifact" is worth nothing where the artifact
+ * is the thing that was removed.
+ *
+ * **Why the two note rows are NOT a destructiveness problem.** `delete_note(id)`
+ * and `move_note(id, newParentNoteId)` take note ids in every slot, so they need
+ * the same subject `get_note` is deferred on — a note that exists and is not
+ * shared with the runner, which a share-scoped caller cannot mint. They are
+ * blocked one step earlier than `delete_task` is, and they are not in `DEFERRED`
+ * only because that loop probes `{ id: subjectId }` directly: handing
+ * `delete_note` a not-shared note id is the `delete_task` problem again. If
+ * `NOT_SHARED_NOTE_ID` ever arrives, `move_note` discharges the same way
+ * `move_task` did — a caller-owned note in the `id` slot, the subject in
+ * `newParentNoteId` — and `delete_note` still does not.
+ *
+ * ⚠️ **All three stay AT-RISK, stay in the unprobed count and stay in the
+ * verdict's named set,** with the reason printed inline on their own to-do row.
+ * RULE 36, and this is the second hour running that it applies: a bucket named
+ * for the reason a row was excluded reads as disposal, and nobody re-asks the
+ * other questions of a row already explained.
+ */
+export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT'; reason: string; discharge: string }[] = [
+  {
+    tool: 'delete_task',
+    kind: 'UNSAFE-SUBJECT',
+    reason:
+      'takes ONE id and it is the subject — the only probe that reaches the access assert is a real delete of a task ' +
+      'this caller cannot read, cannot enumerate afterwards and cannot restore. WRITE-SAFETY detects, it does not prevent',
+    discharge: 'a build whose access assert can be read directly, or a disposable not-shared subject its owner supplies',
+  },
+  {
+    tool: 'delete_note',
+    kind: 'NOTE-SUBJECT',
+    reason:
+      'every id it takes is a NOTE id, so it needs the subject get_note is deferred on — and it is ALSO the delete_task ' +
+      'shape, so NOT_SHARED_NOTE_ID alone does not discharge it',
+    discharge: 'NOT_SHARED_NOTE_ID plus a safe design; a delete aimed at the subject has neither slot nor undo',
+  },
+  {
+    tool: 'move_note',
+    kind: 'NOTE-SUBJECT',
+    reason:
+      'id and newParentNoteId are both NOTE ids, so it needs the subject get_note is deferred on — not a destructiveness ' +
+      'problem: with a not-shared note it discharges exactly the way move_task just did',
+    discharge: 'NOT_SHARED_NOTE_ID plus a caller-owned note for the id slot',
   },
 ];
 
@@ -436,6 +569,43 @@ export function adminGateProbeArgs(tool: string, subjectId: string): Record<stri
   const prop =
     tool === 'office_venture' ? 'entityId' : tool === 'provision_agent' ? 'shareTaskId' : 'taskId';
   return { [prop]: subjectId };
+}
+
+/**
+ * The fixture's `parentId` as read back off a `get_task` answer.
+ *
+ * `null` means *"this answer does not carry a parent"* — an error, an
+ * unparseable body, or a row the caller cannot read. Kept distinct from a real
+ * parent string on purpose: "I could not read it" and "I read it and it is
+ * somewhere else" are different facts, and only the second is a landed write.
+ */
+export function parentIdOf(a: { isError: boolean; text: string }): string | null {
+  if (a.isError) return null;
+  try {
+    const p: unknown = JSON.parse(a.text);
+    const v = (p as { parentId?: unknown })?.parentId;
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is the move fixture usable as the `id` slot of the `move_task` probe?
+ *
+ * Both legs are required and they answer different questions. `readable` says
+ * the call reached the handler at all (RULE 37 — a probe answered by an earlier
+ * gate is not a reading of the access layer). `parentId === expected` says the
+ * fixture is where the repair path assumes it is; a fixture already sitting
+ * somewhere else means a PREVIOUS run landed a write nobody repaired, and
+ * publishing this run's row over it would quietly ratify that.
+ *
+ * When this returns `false` the `move_task` row is not probed and `move_task`
+ * stays in the unprobed to-do list. It does not become a green row for want of
+ * a subject.
+ */
+export function moveFixtureUsable(f: { reachOk: boolean; parentId: string | null }): boolean {
+  return f.reachOk && f.parentId === MOVE_FIXTURE_PARENT_ID;
 }
 
 /**
@@ -596,6 +766,21 @@ export const FRAME_USER_ID_NEG_CTL = 'get_user';
 export const FRAME_NO_ID_NEG_CTL = 'search_users';
 
 /**
+ * The names the frame may count as PROBED, given the tools this run skipped.
+ *
+ * Extracted from `main()` on 2026-09-15 03:5xZ because an ablation of the skip
+ * path came back GREEN — the exclusion lived inline in the CLI, where no test
+ * could reach it, so a future edit could have deleted it silently and the
+ * suite would not have moved. `PROBES` is a list of INTENTIONS; a row whose
+ * subject was unusable was never asked, and a tool that was never asked belongs
+ * on the to-do list, not in the covered count.
+ */
+export function probedNamesFor(skipped: string[]): string[] {
+  const skip = new Set(skipped);
+  return [...PROBES.map((p) => p.tool).filter((t) => !skip.has(t)), ...DEFERRED.map((d) => d.tool)];
+}
+
+/**
  * Census the registry against the probed set. Pure — the registry is passed in,
  * so a test drives it with literals and the CLI drives it with `TOOLS`.
  */
@@ -713,6 +898,18 @@ export function decide(args: {
    */
   scopeReaderControlOk?: boolean;
   /**
+   * Optional and defaulted to `false` so existing callers are unchanged: did
+   * the move fixture's `parentId` differ AFTER the run from what it was before?
+   *
+   * This is the STATE leg of the move probe's safety, and it is deliberately
+   * separate from `landed`. `landed` reads the ANSWER — it fires when a write
+   * probe came back without an error. For a move those two can disagree in
+   * either direction: a build could move the row and still answer with an
+   * error, or answer cleanly having changed nothing. A control that counts the
+   * event cannot see the state, so both are read and either one voids the run.
+   */
+  moveFixtureMoved?: boolean;
+  /**
    * Optional and defaulted to absent so existing callers are unchanged: the
    * DERIVED population the probed set is a subset of. Supply it and the verdict
    * gains its second term; omit it and the verdict is exactly what it was —
@@ -726,6 +923,20 @@ export function decide(args: {
   const unprobed = args.frame?.unprobed ?? [];
   const base = { conflating, landedWrites, unprobed };
 
+  // The STATE leg is ordered ahead of even the WRITE-SAFETY answer leg, because
+  // it is the one reading that is about the world rather than about a reply.
+  // A build that moved the fixture and then answered with an error would be
+  // reported by nothing else here.
+  if (args.moveFixtureMoved) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        `the move fixture (${MOVE_FIXTURE_TASK_ID}) is NOT where it was before this run — a move_task probe LANDED. ` +
+        `It belongs under ${MOVE_FIXTURE_PARENT_ID}; this run attempts the repair and reports whether it took. ` +
+        'Treat every row above as measured against a target this run changed',
+      ...base,
+    };
+  }
   // WRITE-SAFETY first, and it is the only control ordered ahead of SUBJECT.
   // Every other INCONCLUSIVE below says "this run measured nothing". This one
   // says "this run DID something" — a write probe that was not refused reached
@@ -934,13 +1145,46 @@ async function main(): Promise<number> {
   // SCOPE-READER control: a scope this caller CAN read must yield a note.
   let scopeReaderNotes = -1;
   let scopeReaderControlOk = true;
+  // MOVE-FIXTURE control state, all of it printed every run.
+  let moveFixtureParentBefore: string | null = null;
+  let moveFixtureParentAfter: string | null = null;
+  let moveFixtureReachOk = false;
+  let moveFixtureOk = false;
+  let moveFixtureRepaired: boolean | null = null;
+  const skippedProbes: string[] = [];
 
   if (subjectControlOk) {
     const readable = await callTool(url, auth, 'list_notes', { scopeTaskId: READABLE_SCOPE_TASK_ID });
     scopeReaderNotes = countRows(readable);
     scopeReaderControlOk = scopeReaderNotes > 0;
 
+    // MOVE-FIXTURE control, both legs, BEFORE the move probe is allowed to run.
+    // REACH: a no-op move of the fixture to its own current parent must
+    // succeed, which proves this caller reaches move_task's handler body — so a
+    // CONFLATES on that row later is a reading of the access layer and not of
+    // some gate that answered first. It is a real write and it is deliberately
+    // the most boring one available: same parent, no position argument, so
+    // `nextPosition` appends and no sibling is shifted.
+    const fixturePre = await callTool(url, auth, 'get_task', {
+      id: MOVE_FIXTURE_TASK_ID,
+      fields: ['title', 'parentId'],
+    });
+    moveFixtureParentBefore = parentIdOf(fixturePre);
+    const reach = await callTool(url, auth, 'move_task', {
+      id: MOVE_FIXTURE_TASK_ID,
+      newParentId: MOVE_FIXTURE_PARENT_ID,
+    });
+    moveFixtureReachOk = !reach.isError;
+    moveFixtureOk = moveFixtureUsable({ reachOk: moveFixtureReachOk, parentId: moveFixtureParentBefore });
+
     for (const p of PROBES) {
+      if (p.tool === 'move_task' && !moveFixtureOk) {
+        // Not probed, and therefore NOT in the probed set the frame is built
+        // from — move_task goes back on the to-do list rather than becoming a
+        // row with no reading behind it.
+        skippedProbes.push('move_task');
+        continue;
+      }
       const notShared = await callTool(url, auth, p.tool, p.args(NOT_SHARED_TASK_ID));
       const neverReal = await callTool(url, auth, p.tool, p.args(NEVER_REAL_TASK_ID));
       rows.push({
@@ -989,15 +1233,39 @@ async function main(): Promise<number> {
         distinguishes: notShared.klass !== neverReal.klass,
       });
     }
+
+    // STATE leg, last: where is the fixture NOW? Read even when the move row
+    // was skipped — the REACH leg is itself a move, so the question is live
+    // either way.
+    const fixturePost = await callTool(url, auth, 'get_task', {
+      id: MOVE_FIXTURE_TASK_ID,
+      fields: ['title', 'parentId'],
+    });
+    moveFixtureParentAfter = parentIdOf(fixturePost);
+    if (moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore) {
+      // Repair, then re-read. The repair's own answer is not the evidence —
+      // this file's whole subject is tools whose answer and whose effect are
+      // two different claims.
+      await callTool(url, auth, 'move_task', {
+        id: MOVE_FIXTURE_TASK_ID,
+        newParentId: moveFixtureParentBefore,
+      });
+      const recheck = await callTool(url, auth, 'get_task', {
+        id: MOVE_FIXTURE_TASK_ID,
+        fields: ['title', 'parentId'],
+      });
+      moveFixtureRepaired = parentIdOf(recheck) === moveFixtureParentBefore;
+    }
   }
 
   // The FRAME is derived from the registry, not from the run, so it is computed
   // even when the subject control voided every row — "what SHOULD be probed" is
   // a fact about this tree and does not depend on prod answering.
-  const frame = frameCensus(TOOLS as unknown as RegisteredTool[], [
-    ...PROBES.map((p) => p.tool),
-    ...DEFERRED.map((d) => d.tool),
-  ]);
+  //
+  // A probe that was SKIPPED for want of a usable subject is not a probe: it is
+  // excluded here so the row returns to the to-do list rather than counting as
+  // covered on the strength of being listed.
+  const frame = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor(skippedProbes));
 
   const verdict = decide({
     rows,
@@ -1005,6 +1273,8 @@ async function main(): Promise<number> {
     authControlSameAsReal,
     classifierControlOk,
     scopeReaderControlOk,
+    moveFixtureMoved:
+      moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore,
     frame,
   });
   const code =
@@ -1069,6 +1339,23 @@ async function main(): Promise<number> {
         : '   — not run (subject control failed first)'),
   );
   {
+    // Both legs on one line, printed every run including the boring one. The
+    // ANSWER leg is `WRITE CTL` above; this is the STATE leg, and the two are
+    // separate because for a move they can disagree.
+    const moved = moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore;
+    console.log(
+      `  MOVE  CTL   fixture ${MOVE_FIXTURE_TASK_ID} parent ${moveFixtureParentBefore ?? 'unreadable'} → ` +
+        `${moveFixtureParentAfter ?? 'unreadable'}` +
+        (!subjectControlOk
+          ? '   — not run (subject control failed first)'
+          : moved
+            ? `   ⛔ MOVED — a move_task probe landed; repair ${moveFixtureRepaired ? 'took ✅' : 'FAILED ⛔ — move it back by hand'}`
+            : moveFixtureOk
+              ? `   ✅ unchanged; REACH leg ${moveFixtureReachOk ? 'reached the handler' : 'did NOT'}`
+              : '   ⚪ unusable — move_task NOT probed this run, and is back on the to-do list'),
+    );
+  }
+  {
     // Printed at zero and at full, every run. This control's job is to notice
     // its own precondition lapsing, so a run where it is silent is exactly the
     // run where it would be useless.
@@ -1118,11 +1405,17 @@ async function main(): Promise<number> {
       // above still counts it.
       const gated = ADMIN_GATED.find((g) => g.tool === t);
       const reading = adminGateReadings.find((r) => r.tool === t);
+      const unsafe = UNPROBEABLE.find((u) => u.tool === t);
+      const skipped = skippedProbes.includes(t);
       const why = gated
         ? reading && !reading.closed
           ? '   ⛔ ADMIN-GATE OPEN — was deferred as admin-only; this caller now reaches it. PROBE IT'
           : `   ⚪ ADMIN-GATED: ${gated.reason} — still at-risk, still counted, not probeable by this caller`
-        : '';
+        : unsafe
+          ? `   ⚪ ${unsafe.kind}: ${unsafe.reason} — discharge: ${unsafe.discharge}`
+          : skipped
+            ? '   ⛔ SKIPPED this run — its subject was unusable, so there is no reading behind it'
+            : '';
       console.log(`        ${t.padEnd(22)} ${row.idArgs.map((a) => `${a.prop}:${a.referent}`).join(' ')}${why}`);
     }
     console.log(
