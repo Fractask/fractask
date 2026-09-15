@@ -30,6 +30,7 @@
     "not-shared-marker": "tsx scripts/not-shared-deploy-marker.mts",
     "not-shared-behaviour": "tsx scripts/not-shared-behaviour-probe.mts",
     "not-shared-local": "tsx scripts/not-shared-local-collection-probe.mts",
+    "note-scope-blast-radius": "tsx scripts/note-scope-blast-radius-probe.mts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
   },

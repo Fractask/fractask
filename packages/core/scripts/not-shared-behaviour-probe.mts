@@ -462,11 +462,60 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  * `move_task` did — a caller-owned note in the `id` slot, the subject in
  * `newParentNoteId` — and `delete_note` still does not.
  *
- * ⚠️ **All three stay AT-RISK, stay in the unprobed count and stay in the
+ * **Why `update_note` joins them, and it is a THIRD reason.** It was named the
+ * cheapest next row because its assert order is the `move_task` order — a
+ * caller-owned note in the `id` slot gets past `assertAccessibleNoteExists`,
+ * and the subject goes in `scopeTaskId`, which `ensureScopeTaskValid` asserts
+ * second. All true, and all about whether the call REACHES the assert. What it
+ * never asked is what an unrefused write would LEAVE BEHIND, which is the only
+ * world a probe exists for.
+ *
+ * A task survives it. `accessibleTasksCte` (`access.ts:142`) makes
+ * `user_id = <caller>` a **root** of the accessible set regardless of parent, so
+ * `move_task`'s fixture stays readable under a hidden parent and the caller can
+ * move it back — that is what bounded that row's blast radius.
+ * `brain_notes` has **no such root**: a note is accessible iff
+ * `(scope_task_id IS NULL AND user_id = caller) OR scope_task_id IN accessible`
+ * (`access.ts:343`). Set a non-null scope the caller cannot read and the owner
+ * leg does not apply, so the note leaves its own owner's reach — and the repair
+ * call, `update_note(id, {scopeTaskId: null})`, opens with
+ * `assertAccessibleNoteExists(ctx, id)`, which now refuses.
+ *
+ * Measured rather than argued from the code path — `npm run
+ * note-scope-blast-radius`, 5 controls, all fired:
+ *
+ * ```
+ *   get_note(own note)      NULL   ← identical to a never-real id: this surface
+ *                                    has no not_found shape at all
+ *   list_notes(no filter)   0      every enumerator the caller has
+ *   search_notes(marker)    0
+ *   update_note(→ null)     REFUSED (NotSharedNoteError)   the repair path
+ *   ROW-CTL                 the brain_notes row is still there, user_id unchanged
+ *                                  — orphaned, not deleted
+ *   CONTRAST-CTL            the same move done to a TASK → still READABLE,
+ *                                  still in the caller's tree, update_task SUCCEEDED
+ * ```
+ *
+ * So it is the `delete_task` conclusion reached from the opposite direction:
+ * there, WRITE-SAFETY cannot detect the damage because the artifact is gone;
+ * here the artifact is intact and every gauge that could see it has been
+ * switched off by the same write. A detector whose subject has been made
+ * invisible is not a weaker detector, it is none.
+ *
+ * ⚠️ **All four stay AT-RISK, stay in the unprobed count and stay in the
  * verdict's named set,** with the reason printed inline on their own to-do row.
- * RULE 36, and this is the second hour running that it applies: a bucket named
+ * RULE 36, and this is the third hour running that it applies: a bucket named
  * for the reason a row was excluded reads as disposal, and nobody re-asks the
  * other questions of a row already explained.
+ *
+ * 🎯 **The replacement next row is `scratchpad_file`,** and its evidence is the
+ * same kind: `fileScratchEntry(ctx, id, {taskId})` (`src/scratchpad.ts:207`)
+ * calls `loadAccessible(ctx, id)` first and `assertAccessibleExists(ctx,
+ * input.taskId)` second, so it is the `move_task` order — and unlike a note, the
+ * `id` slot takes a scratchpad entry the caller can MINT for the probe with
+ * `scratchpad_add`, whose filed state stays enumerable by
+ * `scratchpad_list(status="filed")`. Unprobed here; named so the next runner
+ * does not re-derive it.
  */
 export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT'; reason: string; discharge: string }[] = [
   {
@@ -492,6 +541,19 @@ export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT
       'id and newParentNoteId are both NOTE ids, so it needs the subject get_note is deferred on — not a destructiveness ' +
       'problem: with a not-shared note it discharges exactly the way move_task just did',
     discharge: 'NOT_SHARED_NOTE_ID plus a caller-owned note for the id slot',
+  },
+  // `update_note` — the row the 2026-09-15 04:3xZ receipt named as "the cheapest
+  // next row", on an argument that was right about the assert order and never
+  // asked what the write would LEAVE BEHIND. See UPDATE_NOTE_BLAST_RADIUS.
+  {
+    tool: 'update_note',
+    kind: 'UNSAFE-SUBJECT',
+    reason:
+      'has the move_task SHAPE but not its blast radius: an unrefused write moves the CALLER\'S OWN note into a scope ' +
+      'the caller cannot read, which orphans it from every enumerator AND from the repair call — measured, ' +
+      '`npm run note-scope-blast-radius`',
+    discharge:
+      'an ownership root for notes (brain_notes has none when scope_task_id is set), or a build whose access assert can be read directly',
   },
 ];
 

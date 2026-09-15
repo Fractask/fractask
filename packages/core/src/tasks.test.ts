@@ -54,7 +54,7 @@ import { shareTaskWithEmail, shareTaskWithUserId } from './shares.js';
 import { mcpErrorText } from './mcp-errors.js';
 import { findTool } from './mcp-tools.js';
 import { setAgentRules } from './settings.js';
-import { taskShares, users } from './schema.js';
+import { brainNotes, tasks as tasksTable, taskShares, users } from './schema.js';
 import type { Context } from './context.js';
 import { nanoid } from 'nanoid';
 import { resetStorageCache } from './storage/index.js';
@@ -1089,6 +1089,64 @@ describe('NotSharedError — every write path answers like get_task does', () =>
     await updateTask(otherCtx, t.id, { assigneeId: ctx.userId });
     const c = await createComment(ctx, { taskId: t.id, body: 'reachable' });
     assert.equal(c.taskId, t.id);
+  });
+});
+
+/**
+ * The asymmetry that makes `update_note(scopeTaskId=…)` UNSAFE to probe.
+ *
+ * `accessibleTasksCte` (access.ts:142) makes `user_id = <caller>` a ROOT of the
+ * accessible task set regardless of parent, so a task the caller owns survives
+ * being reparented under a row the caller cannot read — that is what bounded
+ * the `move_task` probe's blast radius on `Tx5g85uLq96D`.
+ *
+ * `brain_notes` has no equivalent root: the owner leg applies only when
+ * `scope_task_id IS NULL` (access.ts:343). So the same move done to a NOTE puts
+ * it beyond its own owner, and the repair call refuses on the same assert.
+ *
+ * Pinned here as a property of the access rules, not of the probe: if a future
+ * schema change gives notes an ownership root, this reds and `update_note`
+ * becomes probeable again — which is exactly when someone should be told.
+ */
+describe('a note has no ownership root; a task does', () => {
+  it('scope moved to an unreadable task orphans the caller\'s OWN note — and a task in the same position survives', async () => {
+    const { eq } = await import('drizzle-orm');
+    const db = getDb();
+
+    const hiddenProject = await createTask(otherCtx, { title: 'hidden scope', kind: 'project' });
+    assert.equal(await taskVisibility(ctx, hiddenProject.id), 'hidden');
+
+    const myProject = await createTask(ctx, { title: 'mine', kind: 'project' });
+    const myNote = await createBrainNote(ctx, { title: 'mine-to-orphan', scopeTaskId: myProject.id });
+    const myTask = await createTask(ctx, { title: 'mine-to-reparent', parentId: myProject.id });
+
+    // POS leg: both are readable before anything moves. An "absent afterwards"
+    // reading proves nothing without it.
+    assert.notEqual(await getBrainNote(ctx, myNote.id), null);
+    assert.notEqual(await getTask(ctx, myTask.id), null);
+
+    // What an unrefused write would leave behind. Applied underneath the guard
+    // on purpose: the question is the consequence, not whether the guard fires.
+    await db.update(brainNotes).set({ scopeTaskId: hiddenProject.id }).where(eq(brainNotes.id, myNote.id));
+
+    assert.equal(await noteVisibility(ctx, myNote.id), 'hidden', 'the note left its own owner\'s reach');
+    assert.equal(await getBrainNote(ctx, myNote.id), null);
+    assert.equal(
+      (await listBrainNotes(ctx, {})).filter((n) => n.id === myNote.id).length,
+      0,
+      'no enumerator the caller has can find it',
+    );
+    await assert.rejects(
+      () => updateBrainNote(ctx, myNote.id, { scopeTaskId: null }),
+      NotSharedNoteError,
+      'the repair path is refused by the same assert that would have prevented the write',
+    );
+
+    // CONTRAST: the identical move on a TASK. Still readable, still repairable
+    // — so this is about notes, not about hidden parents.
+    await db.update(tasksTable).set({ parentId: hiddenProject.id }).where(eq(tasksTable.id, myTask.id));
+    assert.notEqual(await getTask(ctx, myTask.id), null);
+    assert.equal((await updateTask(ctx, myTask.id, { title: 'repaired' })).title, 'repaired');
   });
 });
 

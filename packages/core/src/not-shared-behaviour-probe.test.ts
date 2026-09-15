@@ -913,7 +913,7 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
   it('names all three remaining tools, each with a reason and a discharge', () => {
     assert.deepEqual(
       UNPROBEABLE.map((u) => u.tool).sort(),
-      ['delete_note', 'delete_task', 'move_note'],
+      ['delete_note', 'delete_task', 'move_note', 'update_note'],
     );
     for (const u of UNPROBEABLE) {
       assert.ok(u.reason.length > 0, `${u.tool} needs a reason`);
@@ -930,6 +930,22 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
     assert.equal(byTool['delete_task'], 'UNSAFE-SUBJECT');
     assert.equal(byTool['move_note'], 'NOTE-SUBJECT');
     assert.ok(!UNPROBEABLE.some((u) => u.tool === 'move_task'), 'move_task is probed, not deferred');
+  });
+
+  it('update_note is UNSAFE-SUBJECT for a reason about the BLAST RADIUS, not about the assert order', () => {
+    // It was named "the cheapest next row" because its assert order IS the
+    // move_task order. That argument is about whether the call REACHES the
+    // assert; it says nothing about what an unrefused write leaves behind, and
+    // the next runner's obvious move is to re-make it. So the row has to carry
+    // the second question, and the measurement that answered it.
+    const upd = UNPROBEABLE.find((u) => u.tool === 'update_note')!;
+    assert.equal(upd.kind, 'UNSAFE-SUBJECT');
+    assert.match(upd.reason, /move_task SHAPE but not its blast radius/);
+    assert.match(upd.reason, /note-scope-blast-radius/, 'the reason must name the command that measured it');
+    assert.ok(
+      !PROBES.some((p) => p.tool === 'update_note'),
+      'update_note must not be a probed row — an unrefused write orphans the fixture with no undo',
+    );
   });
 
   it('says out loud that WRITE-SAFETY cannot cover a delete', () => {
