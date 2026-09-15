@@ -59,6 +59,10 @@ import {
   AFU_UNFETCHABLE_URL,
   afuFetchableUrlFor,
   READABLE_REACH_TASK_ID,
+  NEVER_PUT_ATTACHMENT_ID,
+  PROBE_FINALIZE_FILENAME,
+  finalizeVariants,
+  variantLanded,
   type Row,
   type VariantRow,
   type RegisteredTool,
@@ -413,6 +417,12 @@ describe('the probed set', () => {
       'create_note',
       'create_task',
       'create_upload',
+      // Added 2026-09-15 12:5xZ. The pin fired on this addition too. It is the
+      // one row here whose safety does NOT come from the assert order, so the
+      // flag is doing something slightly different: not "watch this, it might
+      // land", but "this is the call that inserts, and the day someone gives it
+      // a real attachmentId the control must already be watching."
+      'finalize_upload',
       // Added 2026-09-15 03:4xZ. This pin FIRED on the addition, which is what
       // it is for: a write probe that arrives without the flag is watched by
       // nothing, and move_task is the one row on this table whose miss is a
@@ -1431,5 +1441,117 @@ describe('the url dimension — its fixtures, and the pairing it may never send'
     // …and skipping it puts it straight back on the to-do list.
     const skipped = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor(['attach_file_from_url']));
     assert.ok(skipped.unprobed.includes('attach_file_from_url'));
+  });
+});
+
+describe('finalize_upload — the call that actually INSERTS, and the first write row safe enough for a reach leg', () => {
+  it('is on the table, is flagged as a write, and carries its own named variant', () => {
+    const p = PROBES.find((x) => x.tool === 'finalize_upload');
+    assert.ok(p, 'the second half of the upload path must be probed in its own right');
+    assert.equal(p.write, true);
+    // NOT the degenerate `default` variant: the name says which argument set
+    // the row's verdict is a claim about (precondition 21).
+    const vs = variantsOf(p, 'https://example.com/api/mcp');
+    assert.equal(vs.length, 1);
+    assert.equal(vs[0].name, 'object=absent');
+  });
+
+  it('is AT-RISK in the frame, so probing it moves the coverage denominator', () => {
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor([]));
+    assert.ok(frame.atRisk.includes('finalize_upload'));
+    assert.ok(!frame.unprobed.includes('finalize_upload'));
+  });
+
+  it('joins the SECOND reach-safe write variant on the table — and the pin caught me claiming it was the first', () => {
+    // ✍️ Written as *"the ONLY write row with a reach leg"*. The pin failed on
+    // the spot and named the row I had forgotten:
+    // `attach_file_from_url[url=unfetchable]`, reachSafe since 11:5xZ. The
+    // correction is worth keeping rather than quietly editing away, because the
+    // two rows are safe for the SAME reason at different layers and I had
+    // filed one of them under "url dimension" instead of under "write":
+    //
+    //   afu[url=unfetchable]      DNS cannot resolve, so no body can arrive
+    //   finalize_upload[absent]   nothing was PUT, so head() finds no object
+    //
+    // Neither depends on prod's assert order — which is what this file
+    // measures, so a safety argument that leaned on it would be circular. Every
+    // OTHER write variant is reachSafe:false precisely because it does.
+    const reachSafeWrites = PROBES.filter((p) => p.write).flatMap((p) =>
+      variantsOf(p, 'https://example.com/api/mcp')
+        .filter((v) => v.reachSafe)
+        .map((v) => `${p.tool}[${v.name}]`),
+    );
+    assert.deepEqual(reachSafeWrites, ['attach_file_from_url[url=unfetchable]', 'finalize_upload[object=absent]']);
+    // And the complement, which is the half that would rot silently: a write
+    // variant that becomes reachSafe without an argument for why fails HERE.
+    const unsafeWrites = PROBES.filter((p) => p.write).flatMap((p) =>
+      variantsOf(p, 'https://example.com/api/mcp')
+        .filter((v) => !v.reachSafe)
+        .map((v) => p.tool),
+    );
+    assert.deepEqual(unsafeWrites.sort(), [
+      'attach_file',
+      'attach_file_from_url',
+      'create_note',
+      'create_task',
+      'create_upload',
+      'move_task',
+      'post_comment',
+      'scratchpad_file',
+      'update_task',
+    ]);
+  });
+
+  it('sends an attachmentId that was never PUT — the insert is unreachable in EITHER assert order', () => {
+    const p = PROBES.find((x) => x.tool === 'finalize_upload')!;
+    const args = p.args(NOT_SHARED_TASK_ID) as Record<string, unknown>;
+    assert.equal(args.attachmentId, NEVER_PUT_ATTACHMENT_ID);
+    assert.equal(args.taskId, NOT_SHARED_TASK_ID);
+    // The subject is the taskId, not the attachmentId — this is the argument
+    // being varied, and the row would be measuring the wrong thing otherwise.
+    assert.equal((p.args(NEVER_REAL_TASK_ID) as Record<string, unknown>).attachmentId, NEVER_PUT_ATTACHMENT_ID);
+  });
+
+  it('gives the finalize probe its OWN marker, distinct from create_upload\'s', () => {
+    // The two halves of the upload path leave different traces, and a shared
+    // filename would make a stray row from one look like a stray row from the
+    // other. `create_upload` leaves no row at all; this one would leave one.
+    assert.notEqual(PROBE_FINALIZE_FILENAME, PROBE_UPLOAD_FILENAME);
+    const p = PROBES.find((x) => x.tool === 'finalize_upload')!;
+    assert.equal((p.args(NOT_SHARED_TASK_ID) as Record<string, unknown>).filename, PROBE_FINALIZE_FILENAME);
+  });
+
+  it('the row-level args and the variant args agree — two spellings of one call is one drift away from a lie', () => {
+    const p = PROBES.find((x) => x.tool === 'finalize_upload')!;
+    assert.deepEqual(finalizeVariants()[0].args(NOT_SHARED_TASK_ID), p.args(NOT_SHARED_TASK_ID));
+  });
+});
+
+describe('variantLanded — the WRITE-SAFETY rule, extracted so a test can reach the code and not a copy', () => {
+  const refused = { isError: true };
+  const ok = { isError: false };
+
+  it('does not fire when both refused subjects were refused and there is no reach leg', () => {
+    assert.equal(variantLanded({ notShared: refused, neverReal: refused, readable: null }), false);
+  });
+
+  it('fires when the not-shared subject was NOT refused', () => {
+    assert.equal(variantLanded({ notShared: ok, neverReal: refused, readable: null }), true);
+  });
+
+  it('fires when the never-real subject was NOT refused', () => {
+    assert.equal(variantLanded({ notShared: refused, neverReal: ok, readable: null }), true);
+  });
+
+  it('🔑 fires when only the REACH leg succeeded — the leg the rule described and did not read', () => {
+    // This is the regression. Before 2026-09-15 12:5xZ this case returned
+    // false: `readable` was a `Klass` by then and its `isError` was gone. On a
+    // readable subject a successful write is a REAL attachment on a real task,
+    // so this is the one leg where "landed" is not hypothetical.
+    assert.equal(variantLanded({ notShared: refused, neverReal: refused, readable: ok }), true);
+  });
+
+  it('a refused reach leg does not fire it — the control is keyed on success, not on presence', () => {
+    assert.equal(variantLanded({ notShared: refused, neverReal: refused, readable: refused }), false);
   });
 });

@@ -303,6 +303,33 @@ export const PROBE_NOTE_TITLE = 'NOT-SHARED PROBE — must never be created (not
 export const PROBE_UPLOAD_FILENAME = 'not-shared-probe-create-upload.txt';
 
 /**
+ * `finalize_upload`'s SECOND dimension, and the reason this row is the safest
+ * write on the whole table.
+ *
+ * `finalizeUpload` (`src/attachments.ts:368`) derives its storage key from the
+ * ACCESS CHECK's answer — `storageKeyFor(ownerId, storagePathSegment,
+ * attachmentId, filename)` — and then `head()`s it. So an `attachmentId` that
+ * was never PUT cannot resolve to an object under ANY prefix, for ANY subject,
+ * in EITHER assert order. The insert is unreachable by construction rather than
+ * by argument: there is nothing for the row to point at.
+ *
+ * That is a stronger guarantee than the six write probes above it have. Each of
+ * those is safe because prod's assert fires first — which is the very thing
+ * this file exists to measure, so their safety is downstream of the reading.
+ * This one is safe even if prod has no access check at all.
+ *
+ * It is also what makes the reach leg legal here. Precondition 12 needs a third
+ * subject the caller CAN read, and for every other write row the readable
+ * pairing is exactly the combination that could land. Here it cannot, so the
+ * variant is `reachSafe: true` and the row can tell "conflates" from "never
+ * asked" on its own output.
+ */
+export const NEVER_PUT_ATTACHMENT_ID = process.env.NEVER_PUT_ATTACHMENT_ID || 'zzzNoUpload9XyZ';
+
+/** The `finalize_upload` probe's filename — never attached, see above. */
+export const PROBE_FINALIZE_FILENAME = 'not-shared-probe-finalize-upload.txt';
+
+/**
  * One probed tool: a name plus how it names the subject in its own arguments.
  *
  * `write: true` marks a call that would MUTATE if it were not refused. Those
@@ -511,6 +538,39 @@ export function afuVariants(endpointUrl: string): ProbeVariant[] {
 }
 
 /**
+ * `finalize_upload`'s variant set — one entry, and the single entry is the
+ * point.
+ *
+ * A one-variant row is normally spelled by omitting `variants` entirely
+ * (`variantsOf`'s degenerate case). This row spells it out because the
+ * degenerate variant is `reachSafe: false` by design, and here the reach leg is
+ * both safe and load-bearing: without it the two refused subjects answering
+ * differently would still be a reading, but the row could not say that the
+ * handler was REACHED — and "reached" is precisely what separates
+ * `finalize_upload` from `attach_file_from_url[url=unfetchable]`, whose three
+ * identical rows mean nobody ever asked.
+ *
+ * The name says what is being held fixed, so the row reads as a claim about an
+ * argument set rather than about the tool (precondition 21).
+ */
+export function finalizeVariants(): ProbeVariant[] {
+  return [
+    {
+      name: 'object=absent',
+      args: (id) => ({
+        attachmentId: NEVER_PUT_ATTACHMENT_ID,
+        taskId: id,
+        filename: PROBE_FINALIZE_FILENAME,
+        mimeType: 'text/plain',
+        sizeBytes: 21,
+      }),
+      reachSafe: true,
+      why: 'the attachmentId was never PUT, so head() misses under every prefix — the insert is unreachable in EITHER assert order, which is what makes a readable subject safe here',
+    },
+  ];
+}
+
+/**
  * The probed set. Each row is a tool an agent reaches for when it is about to
  * draw a conclusion about whether a task is there.
  */
@@ -662,6 +722,45 @@ export const PROBES: Probe[] = [
     args: (id) => ({ taskId: id, url: AFU_UNFETCHABLE_URL }),
     variants: afuVariants,
     note: 'WRITE, TWO-DIMENSIONAL — the url decides the verdict, so one url is never a reading of this tool',
+    write: true,
+  },
+  // `finalize_upload(taskId=…)` — the SECOND half of the two-call upload path,
+  // whose first half (`create_upload`) has been green here since 02:4xZ. It is
+  // a row of its own for the reason this card keeps re-earning: the two calls
+  // reach the access assert by the same helper but at different times, and only
+  // this one is the call that INSERTS. A `create_upload` that is correctly
+  // refused proves nothing about the call that would create the row.
+  //
+  // Measured by hand against prod on 2026-09-15 12:4xZ before it was encoded
+  // (`tmp-finalize-upload-hand-probe.mts`, deleted in the same commit — the
+  // reading is the artifact, the throwaway script is not):
+  //
+  // ```
+  //   readable   Tx5g85uLq96D   OTHER_ERR   No uploaded object found for attachmentId zzzNoUpload9XyZ…
+  //   not-shared TfmR7QJFqluo   NOT_SHARED  not_shared: …do not recreate it…
+  //   never-real zzzNoSuch9XyZ  NOT_FOUND   not_found: Task zzzNoSuch9XyZ not found
+  // ```
+  //
+  // THREE distinct answers, which is the strongest shape precondition 12 admits:
+  // the row distinguishes AND the handler is demonstrably reached, off the same
+  // three calls. Prod asserts access before it looks at storage.
+  //
+  // Its variant is named rather than `default` because the second argument is
+  // load-bearing in the safety argument, not just in the reading — see
+  // `NEVER_PUT_ATTACHMENT_ID`. An `attachmentId` that was never PUT makes the
+  // insert unreachable by construction, which is why this is the only write row
+  // on the table that may be pointed at a readable subject.
+  {
+    tool: 'finalize_upload',
+    args: (id) => ({
+      attachmentId: NEVER_PUT_ATTACHMENT_ID,
+      taskId: id,
+      filename: PROBE_FINALIZE_FILENAME,
+      mimeType: 'text/plain',
+      sizeBytes: 21,
+    }),
+    variants: finalizeVariants,
+    note: 'WRITE — the call that actually INSERTS; safe by construction rather than by assert order, so it carries a REACH leg',
     write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
@@ -1375,6 +1474,41 @@ export function variantStatus(v: { notShared: Klass; neverReal: Klass; readable:
  * for `attach_file_from_url` were wrong in opposite directions; only the pair
  * says anything.
  */
+/**
+ * Did this variant's calls MUTATE anything?
+ *
+ * Read off the transport, not off the classification: a refusal is an error, so
+ * a write that comes back WITHOUT one reached the mutation.
+ *
+ * ⚠️ **The reach leg is a leg of this rule, and until 2026-09-15 12:5xZ it was
+ * not read.** The run loop's own comment said *"the reach leg counts too: on a
+ * readable subject it is the one call here whose success would be a real
+ * attachment"* — and the condition beside it named only the two refused
+ * subjects, because `readable` was narrowed to a `Klass` at the call site and
+ * its `isError` was discarded on the way. The gauge was correct anyway, for a
+ * reason that has nothing to do with the gauge: the only `reachSafe` variant in
+ * existence was `attach_file_from_url[url=unfetchable]`, which cannot succeed
+ * at all. `finalize_upload[object=absent]` is the second, and it is a write.
+ *
+ * **A control whose prose describes a leg its code does not read is already
+ * failing — it just cannot say so, because nothing has exercised the leg.** The
+ * same shape as precondition 12 one level up: an untested branch and a passing
+ * branch print the same green.
+ *
+ * Extracted rather than left inline for precondition 22: the rule was a
+ * condition inside `main()`, so no test could import it, and the test that
+ * "covered" it would have had to re-type it as a local lambda — agreeing with a
+ * copy instead of with the code, and staying green through exactly this edit.
+ */
+export function variantLanded(a: {
+  notShared: { isError: boolean };
+  neverReal: { isError: boolean };
+  /** `null` when the variant is not `reachSafe` — no reach leg was sent. */
+  readable: { isError: boolean } | null;
+}): boolean {
+  return !a.notShared.isError || !a.neverReal.isError || a.readable?.isError === false;
+}
+
 export function rollUpVariants(vs: VariantRow[]): {
   distinguishes: boolean;
   varies: boolean;
@@ -1873,7 +2007,8 @@ async function main(): Promise<number> {
         // for `attach_file_from_url` the same tool is safe to point at a
         // readable subject with one url and would create an attachment with
         // the other.
-        const readable = v.reachSafe ? (await callTool(url, auth, p.tool, v.args(READABLE_REACH_TASK_ID))).klass : null;
+        const readableAnswer = v.reachSafe ? await callTool(url, auth, p.tool, v.args(READABLE_REACH_TASK_ID)) : null;
+        const readable = readableAnswer?.klass ?? null;
         variants.push({
           name: v.name,
           why: v.why,
@@ -1885,9 +2020,13 @@ async function main(): Promise<number> {
         // Read off the transport, not off the classification: a refusal is an
         // error, so a write that comes back WITHOUT one reached the mutation.
         // Accumulated across variants — a write that landed on ANY argument set
-        // landed. The reach leg counts too: on a readable subject it is the one
-        // call here whose success would be a real attachment.
-        if (p.write && (!notShared.isError || !neverReal.isError)) landedByVariant.push(`${p.tool}[${v.name}]`);
+        // landed.
+        //
+        // The reach leg is read here too — see `variantLanded`, which is where
+        // the rule lives so a test can reach it.
+        if (p.write && variantLanded({ notShared, neverReal, readable: readableAnswer })) {
+          landedByVariant.push(`${p.tool}[${v.name}]`);
+        }
       }
       const rolled = rollUpVariants(variants);
       rows.push({
@@ -2137,6 +2276,20 @@ async function main(): Promise<number> {
       // A multi-argument row prints EVERY variant, never a summary. The summary
       // is the thing precondition 21 says cannot exist: one of these lines is
       // what a single-url probe would have published on its own.
+      // A SINGLE-variant row whose reach leg was actually sent prints it too.
+      // Without this the third subject is asked and its answer never appears
+      // anywhere: `finalize_upload` reads `NOT_SHARED / NOT_FOUND` — the same
+      // two columns as a row nobody could tell apart from "never asked" — while
+      // the leg that rules that out is invisible. **An unprinted control is not
+      // a control the reader has.**
+      if (!multi && r.variants?.length === 1 && r.variants[0].readable !== null) {
+        const v = r.variants[0];
+        console.log(
+          `     ✅ ${v.name.padEnd(18)} REACH leg: readable subject → ${v.readable} ` +
+            `(≠ both refused answers, so the handler was reached)`,
+        );
+        console.log(`        ${v.why}`);
+      }
       if (multi) {
         for (const v of r.variants!) {
           const glyphs = { DISTINGUISHES: '✅', CONFLATES: '🔴', UNREACHED: '⚪' } as const;
