@@ -25,8 +25,17 @@ import {
   PROBE_NOTE_TITLE,
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
+  frameCensus,
+  frameControlsOk,
+  referentOf,
+  isIdShaped,
+  SHAREABLE_REFERENTS,
+  FRAME_USER_ID_NEG_CTL,
+  FRAME_NO_ID_NEG_CTL,
   type Row,
+  type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
+import { TOOLS } from './mcp-tools.ts';
 
 const row = (tool: string, notShared: Row['notShared'], neverReal: Row['neverReal']): Row => ({
   tool,
@@ -438,5 +447,246 @@ describe('the probed set', () => {
     for (const d of DEFERRED) {
       assert.ok(d.envVar.length > 0, `${d.tool} must name the env var that supplies its subject`);
     }
+  });
+});
+
+/**
+ * The FRAME — the population `PROBES` is a subset of.
+ *
+ * Added 2026-09-15 01:4xZ. For five hours this card published `N of 12` with no
+ * denominator, and the probed set grew by whatever the last runner noticed. The
+ * tests below are mostly about the CENSUS being a reading rather than an
+ * assertion: the key must select on the KIND OF ROW an argument names (not on
+ * the argument's name), an unclassified argument must land on the ALARMING
+ * side, and every control must be able to take the coverage figure away.
+ */
+describe('the frame — what population is the probed set a subset OF', () => {
+  /** A tiny registry, so the census is driven by literals and not by the real tree. */
+  const fakeTools: RegisteredTool[] = [
+    { name: 'get_task', inputSchemaJson: { properties: { id: {}, fields: {} } } },
+    { name: 'get_user', inputSchemaJson: { properties: { id: {}, name: {} } } },
+    { name: 'search_users', inputSchemaJson: { properties: { query: {} } } },
+    { name: 'report_shipped', inputSchemaJson: { properties: { taskId: {}, title: {} } } },
+  ];
+
+  it('derives the denominator from the registry, not from a typed-in number', () => {
+    const f = frameCensus(fakeTools, ['get_task']);
+    assert.equal(f.total, 4);
+    // get_task(id:task) + report_shipped(taskId:task). NOT get_user, NOT search_users.
+    assert.deepEqual(f.atRisk.sort(), ['get_task', 'report_shipped']);
+  });
+
+  it('prints the term every receipt on this card was missing: at-risk AND unprobed', () => {
+    const f = frameCensus(fakeTools, ['get_task']);
+    assert.deepEqual(f.unprobed, ['report_shipped']);
+  });
+
+  it('keys on the KIND OF ROW, not the argument name — the reading the hand pass got wrong', () => {
+    // `id` means a different kind of row on each of these. A name-only key
+    // swept get_user into the at-risk set and inflated the denominator.
+    assert.equal(referentOf('get_task', 'id'), 'task');
+    assert.equal(referentOf('get_note', 'id'), 'note');
+    assert.equal(referentOf('get_user', 'id'), 'user');
+    assert.equal(referentOf('cancel_prompt', 'id'), 'prompt');
+    assert.equal(referentOf('delete_comment', 'id'), 'comment');
+    assert.equal(referentOf('scratchpad_dismiss', 'id'), 'scratch');
+  });
+
+  it('counts only share-scoped row kinds as at-risk — a user id cannot produce this bug', () => {
+    assert.deepEqual(SHAREABLE_REFERENTS, ['task', 'note', 'scratch']);
+    assert.ok(!SHAREABLE_REFERENTS.includes('user'));
+  });
+
+  it('puts an UNCLASSIFIED argument on the alarming side, never the healthy one', () => {
+    // RULE 30: an aggregate that counts the defect value reads an unread row as
+    // healthy. A new tool with an argument nobody has classified must be loud.
+    const withNewArg: RegisteredTool[] = [
+      ...fakeTools,
+      { name: 'brand_new_tool', inputSchemaJson: { properties: { widgetId: {} } } },
+    ];
+    const f = frameCensus(withNewArg, ['get_task']);
+    assert.equal(referentOf('brand_new_tool', 'widgetId'), 'UNCLASSIFIED');
+    assert.ok(f.atRisk.includes('brand_new_tool'), 'an unclassified id argument must count AT-RISK');
+    assert.deepEqual(f.unclassifiedArgs, [{ tool: 'brand_new_tool', prop: 'widgetId' }]);
+    assert.ok(!frameControlsOk(f), 'an unclassified argument must void the frame, not be absorbed by it');
+  });
+
+  it('voids the coverage claim rather than publishing a pass over an unreadable denominator', () => {
+    const f = frameCensus(
+      [...fakeTools, { name: 'brand_new_tool', inputSchemaJson: { properties: { widgetId: {} } } }],
+      ['get_task', 'report_shipped', 'brand_new_tool'],
+    );
+    const v = decide({ ...prodNotesToday(), rows: [row('get_task', 'NOT_SHARED', 'NOT_FOUND')], frame: f });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /unclassified/);
+    assert.match(v.reason, /brand_new_tool\.widgetId/);
+  });
+
+  it('a tool with no id argument at all is not at-risk — it has no subject to conflate', () => {
+    const f = frameCensus(fakeTools, ['get_task']);
+    assert.ok(f.noIdArg.includes('search_users'));
+    assert.ok(!f.atRisk.includes('search_users'));
+  });
+
+  it('names its two NEG-CTLs, and both read as NOT at-risk', () => {
+    const f = frameCensus(fakeTools, ['get_task']);
+    assert.equal(FRAME_USER_ID_NEG_CTL, 'get_user');
+    assert.equal(FRAME_NO_ID_NEG_CTL, 'search_users');
+    assert.ok(f.controls.userIdNegCtl.ok, 'a user id must not read as a shareable row');
+    assert.ok(f.controls.noIdNegCtl.ok);
+  });
+
+  it('fires the probed-are-at-risk control — a PROBED tool reading as safe would deflate the denominator', () => {
+    const f = frameCensus(fakeTools, ['get_task']);
+    assert.ok(f.controls.probedAreAtRisk.ok);
+    // And it FAILS when a probed tool is not at-risk, which is the only way the
+    // fraction can silently read better than the truth.
+    const bad = frameCensus(fakeTools, ['get_task', 'search_users']);
+    assert.ok(!bad.controls.probedAreAtRisk.ok);
+    assert.ok(!frameControlsOk(bad));
+  });
+
+  it('a frame over an empty registry is not a denominator', () => {
+    const f = frameCensus([], []);
+    assert.ok(!f.controls.population.ok);
+    assert.ok(!frameControlsOk(f));
+  });
+
+  it('carries a catch-net for an id-shaped argument the name test would miss', () => {
+    const f = frameCensus(
+      [{ name: 'odd', inputSchemaJson: { properties: { parent: { description: 'Parent task id, or null' } } } }],
+      [],
+    );
+    assert.ok(!isIdShaped('parent'));
+    assert.deepEqual(f.catchNet, [{ tool: 'odd', prop: 'parent' }]);
+  });
+});
+
+describe('the frame, against the REAL registry — the numbers a receipt may quote', () => {
+  const real = frameCensus(TOOLS as unknown as RegisteredTool[], [
+    ...PROBES.map((p) => p.tool),
+    ...DEFERRED.map((d) => d.tool),
+  ]);
+
+  it('every control fires on the real tree, so its figures are readings', () => {
+    assert.ok(frameControlsOk(real), 'the real-registry frame must have no unclassified argument');
+    assert.equal(real.unclassifiedArgs.length, 0);
+    assert.ok(real.controls.probedAreAtRisk.ok);
+  });
+
+  it('every PROBED tool is itself at-risk — 13 of 13', () => {
+    assert.equal(real.controls.probedAreAtRisk.total, real.probed.length);
+    assert.equal(real.controls.probedAreAtRisk.atRisk, real.probed.length);
+  });
+
+  it('the three buckets sum to the registry — no tool is dropped on the floor', () => {
+    const nonShareableIds = real.rows.filter((r) => !r.atRisk && r.idArgs.length > 0).length;
+    assert.equal(real.atRisk.length + real.noIdArg.length + nonShareableIds, real.total);
+  });
+
+  it('holds provision_agent at-risk — the row the 2026-09-14 hand pass missed', () => {
+    // The hand-written census said 27 at-risk / 14 unprobed. Derived, it is
+    // 28 / 15, and this is the extra row: `shareTaskId` is documented as
+    // "Entity/task id to share with the new agent" and reaches
+    // shareTaskWithUserId. A hand-listed denominator drifts; a derived one
+    // cannot. Pinned so a future edit cannot quietly drop it again.
+    assert.ok(real.atRisk.includes('provision_agent'));
+    assert.ok(real.unprobed.includes('provision_agent'));
+    assert.equal(referentOf('provision_agent', 'shareTaskId'), 'task');
+  });
+
+  it('does not count move_task as unprobed-and-safe — it is at-risk on BEHAVIOUR', () => {
+    // This card's rules keep move_task UNDOCUMENTED as the doc-half NEG-CTL.
+    // That is the prose axis. The frame is the behaviour axis, and on that axis
+    // move_task takes two task ids and is at-risk. Nothing here touches its
+    // description.
+    assert.ok(real.atRisk.includes('move_task'));
+    assert.ok(real.unprobed.includes('move_task'));
+  });
+});
+
+describe('INCOMPLETE — the status the exit contract was missing', () => {
+  const clean = [row('get_task', 'NOT_SHARED', 'NOT_FOUND')];
+  /**
+   * Both NEG-CTL subjects are present on purpose. A registry without them
+   * cannot EXECUTE those controls, and `frameControlsOk` correctly refuses to
+   * call such a frame a denominator — pinned as its own test below.
+   */
+  const negCtls: RegisteredTool[] = [
+    { name: FRAME_USER_ID_NEG_CTL, inputSchemaJson: { properties: { id: {} } } },
+    { name: FRAME_NO_ID_NEG_CTL, inputSchemaJson: { properties: { query: {} } } },
+  ];
+  const coveredFrame = frameCensus(
+    [{ name: 'get_task', inputSchemaJson: { properties: { id: {} } } }, ...negCtls],
+    ['get_task'],
+  );
+  const gappyFrame = frameCensus(
+    [
+      { name: 'get_task', inputSchemaJson: { properties: { id: {} } } },
+      { name: 'delete_task', inputSchemaJson: { properties: { id: {} } } },
+      ...negCtls,
+    ],
+    ['get_task'],
+  );
+
+  it('a registry missing a NEG-CTL subject voids the frame — a control that cannot EXECUTE is not a control', () => {
+    // RULE 37. The two NEG-CTLs are named tools; drop them from the registry and
+    // the control is perfectly aimed at nothing. That must read as "no
+    // denominator", not as a clean frame — it is how a shrinking registry would
+    // quietly turn the coverage figure green.
+    const noNegCtl = frameCensus([{ name: 'get_task', inputSchemaJson: { properties: { id: {} } } }], ['get_task']);
+    assert.ok(!noNegCtl.controls.userIdNegCtl.ok);
+    assert.ok(!noNegCtl.controls.noIdNegCtl.ok);
+    assert.ok(!frameControlsOk(noNegCtl));
+    assert.equal(decide({ ...prodToday(), rows: clean, frame: noNegCtl }).status, 'INCONCLUSIVE');
+  });
+
+  it('does not report a clean pass as DISTINGUISHES while at-risk tools were never asked', () => {
+    const v = decide({ ...prodToday(), rows: clean, frame: gappyFrame });
+    assert.equal(v.status, 'INCOMPLETE');
+    assert.match(v.reason, /never asked/);
+    assert.match(v.reason, /delete_task/);
+  });
+
+  it('reaches DISTINGUISHES only when the frame is actually covered', () => {
+    const v = decide({ ...prodToday(), rows: clean, frame: coveredFrame });
+    assert.equal(v.status, 'DISTINGUISHES');
+    assert.deepEqual(v.unprobed, []);
+  });
+
+  it('lets a real defect outrank a coverage gap, and still prints both terms', () => {
+    // A conflating tool is a defect; an unprobed one is a gap. The headline is
+    // the defect — but the gap must not vanish from the sentence.
+    const v = decide({ ...prodNotesToday(), frame: gappyFrame });
+    assert.equal(v.status, 'CONFLATES');
+    assert.match(v.reason, /answer the same thing/);
+    assert.match(v.reason, /1 of 2 AT-RISK tool\(s\) were never asked \(delete_task\)/);
+    assert.deepEqual(v.unprobed, ['delete_task']);
+  });
+
+  it('reports unprobed on every verdict shape, so it is printable at zero', () => {
+    const shapes = [
+      decide({ ...prodToday(), rows: clean, frame: coveredFrame }),
+      decide({ ...prodToday(), rows: clean, frame: gappyFrame }),
+      decide({ ...prodNotesToday(), frame: gappyFrame }),
+      decide({ ...prodToday(), subjectControlOk: false, frame: gappyFrame }),
+      decide({ rows: [writeRow('create_task', true)], subjectControlOk: true, authControlSameAsReal: false, classifierControlOk: true, frame: gappyFrame }),
+    ];
+    for (const v of shapes) assert.ok(Array.isArray(v.unprobed), `${v.status} must carry unprobed`);
+  });
+
+  it('leaves an older caller with no frame exactly as it was', () => {
+    // The frame is additive. A caller that supplies no registry genuinely
+    // cannot state coverage, and must not be told it has none.
+    const v = decide({ ...prodToday(), rows: clean });
+    assert.equal(v.status, 'DISTINGUISHES');
+    assert.doesNotMatch(v.reason, /AT-RISK/);
+    assert.deepEqual(v.unprobed, []);
+  });
+
+  it('a voided run still voids — the frame cannot rescue a failed subject control', () => {
+    const v = decide({ ...prodToday(), subjectControlOk: false, frame: coveredFrame });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.match(v.reason, /did not read as not-shared/);
   });
 });

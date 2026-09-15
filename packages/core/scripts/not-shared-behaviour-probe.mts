@@ -78,11 +78,28 @@
  * and only this one says *"this run DID something."* A safety argument that
  * cannot fail out loud is a comment.
  *
+ * ## The FRAME — added 2026-09-15 01:4xZ, and it changes what exit 0 means
+ *
+ * `PROBES` is a hand-picked list. For five hours every receipt on this card
+ * published `N of 12` — a numerator with no denominator — while nothing printed
+ * the population those twelve are a subset of. The probe had reproduced the
+ * shape it exists to kill. So the population is now DERIVED from the tool
+ * registry on every run (`frameCensus`), and `probed / at-risk` is printed as a
+ * fraction with the unprobed tools listed by name.
+ *
+ * That is why there is a fourth status. See `Referent` for why the census keys
+ * on the KIND OF ROW an argument names rather than on the argument's name.
+ *
  * ## Exit codes
  *
- *   0  DISTINGUISHES   every probed tool tells the two subjects apart
- *   1  CONFLATES       at least one does not, and all controls held
- *   2  INCONCLUSIVE    a control failed, or the transport did not answer
+ *   0  DISTINGUISHES   every AT-RISK tool was probed, and every one tells the
+ *                      two subjects apart
+ *   1  CONFLATES       at least one probed tool does not, and all controls held
+ *   1  INCOMPLETE      every PROBED tool distinguishes, and at-risk tools were
+ *                      never asked. Exit 1, not 0: a green over a hand-picked
+ *                      twelfth of the surface is the reading this card rejects
+ *   2  INCONCLUSIVE    a control failed, the frame has no readable denominator,
+ *                      or the transport did not answer
  *
  * Run from packages/core:
  *   npx tsx scripts/not-shared-behaviour-probe.mts
@@ -92,6 +109,10 @@
  *   NOT_SHARED_TASK_ID=... NEVER_REAL_TASK_ID=... npm run not-shared-behaviour
  */
 import { readEndpoint, AUTH_NEG_CTL_TOKEN } from './not-shared-deploy-marker.mts';
+// The registry, for the FRAME census. Imported rather than hand-listed for the
+// same reason the deploy marker imports it: a typed-in population is a number
+// with no clock, and this one has to go red the hour a new tool is registered.
+import { TOOLS } from '../src/mcp-tools.ts';
 
 /**
  * A task that EXISTS and is not shared with the runner. Defaulted to the id
@@ -305,6 +326,228 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  */
 export const READABLE_SCOPE_TASK_ID = process.env.READABLE_SCOPE_TASK_ID || '0kOf10V9thDz';
 
+/* ------------------------------------------------------------------ */
+/* the FRAME — what population is `PROBES` a subset OF?                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ## Why the frame exists
+ *
+ * For five hours `PROBES` grew by whatever the last runner happened to notice
+ * — 6 → 7 → 9 → 10 → 11 → 12 — and every receipt published `N of 12`. Twelve
+ * is a numerator. Nothing ever printed **the set those twelve are a subset
+ * of**, so the probe reproduced the exact shape it was built to kill: a
+ * hand-written list that reads as complete because nothing prints what it
+ * omits. This card's own fix brief says *"add a test per tool, not one shared
+ * test: the current single-site guarantee is exactly what made this look
+ * covered"* — and the probe was the single-site guarantee one level up.
+ *
+ * So the denominator is DERIVED from the tool registry on every run. It is not
+ * a number anybody types: a remembered denominator rots exactly the way the
+ * marker's `2 of 32` target did.
+ *
+ * ## Why the referent, not the argument name
+ *
+ * An earlier hand pass keyed on the ARGUMENT NAME and swept in `get_user(id)`
+ * — a *user* id, which is not a shareable row and cannot produce this bug.
+ * That is keying on FORM. What makes a tool at-risk is the KIND OF ROW its id
+ * names, so each id-shaped argument is resolved to a referent. `id` is
+ * resolved PER TOOL, because the same name means a task on `get_task`, a note
+ * on `get_note`, a prompt on `cancel_prompt` and a user on `get_user`.
+ *
+ * ## Why an unknown argument is AT-RISK rather than safe
+ *
+ * If a new tool ships an id-shaped argument this map has never seen, the
+ * honest reading is *"nobody has classified this"*, and the frame goes
+ * INCONCLUSIVE. Landing it in the safe bucket would be RULE 30 exactly — an
+ * aggregate that counts the defect value reads an unread row as healthy. The
+ * whole purpose of this census is to make a NEW unprobed tool loud, so it must
+ * not be able to arrive quietly on the reassuring side.
+ */
+export type Referent = 'task' | 'note' | 'scratch' | 'user' | 'prompt' | 'comment' | 'attachment' | 'UNCLASSIFIED';
+
+/**
+ * The three row kinds that are SHARE-SCOPED, i.e. the ones that can exist and
+ * be invisible to the caller. Only a tool naming one of these can conflate
+ * "not shared" with "not there" in the first place.
+ */
+export const SHAREABLE_REFERENTS: Referent[] = ['task', 'note', 'scratch'];
+
+/** Unambiguous id-argument names: the name alone fixes the referent. */
+export const ID_ARG_REFERENT: Record<string, Referent> = {
+  taskId: 'task',
+  parentId: 'task',
+  newParentId: 'task',
+  goalId: 'task',
+  goalTaskId: 'task',
+  milestoneId: 'task',
+  scopeTaskId: 'task',
+  shareTaskId: 'task',
+  entityId: 'task',
+  noteId: 'note',
+  parentNoteId: 'note',
+  newParentNoteId: 'note',
+  assigneeId: 'user',
+  reviewerId: 'user',
+  userId: 'user',
+  agentId: 'user',
+  attachmentId: 'attachment',
+};
+
+/**
+ * Ambiguous names, resolved per tool. Keyed `<tool>.<arg>`. Every entry here is
+ * a bare `id`, and the spread of referents across it is the reason the
+ * name-only map above cannot cover it: `id` names four different kinds of row
+ * depending on which tool you are holding.
+ */
+export const TOOL_ID_ARG_REFERENT: Record<string, Referent> = {
+  'get_task.id': 'task',
+  'update_task.id': 'task',
+  'delete_task.id': 'task',
+  'move_task.id': 'task',
+  'get_note.id': 'note',
+  'update_note.id': 'note',
+  'delete_note.id': 'note',
+  'move_note.id': 'note',
+  'scratchpad_file.id': 'scratch',
+  'scratchpad_dismiss.id': 'scratch',
+  'cancel_prompt.id': 'prompt',
+  'delete_comment.id': 'comment',
+  'delete_attachment.id': 'attachment',
+  'get_user.id': 'user',
+};
+
+/** Is a property name id-SHAPED, i.e. a candidate that must then be classified? */
+export function isIdShaped(prop: string): boolean {
+  return /^id$|Id$/.test(prop);
+}
+
+/** Resolve one argument to the kind of row it names. Per-tool first. */
+export function referentOf(tool: string, prop: string): Referent {
+  return TOOL_ID_ARG_REFERENT[`${tool}.${prop}`] ?? ID_ARG_REFERENT[prop] ?? 'UNCLASSIFIED';
+}
+
+/** The shape the frame census needs from a registered tool. Structural, so tests can pass literals. */
+export type RegisteredTool = { name: string; inputSchemaJson?: { properties?: Record<string, unknown> } };
+
+export type FrameRow = {
+  tool: string;
+  /** Every id-shaped argument, with the kind of row it names. */
+  idArgs: { prop: string; referent: Referent }[];
+  /** Names at least one shareable row — so this tool CAN commit the bug. */
+  atRisk: boolean;
+  /** Carries an id-shaped argument nobody has classified. Forces at-risk AND voids the frame. */
+  unclassified: boolean;
+  probed: boolean;
+};
+
+export type Frame = {
+  rows: FrameRow[];
+  total: number;
+  atRisk: string[];
+  probed: string[];
+  /** AT-RISK and never probed — the term every receipt on this card was missing. */
+  unprobed: string[];
+  /** Tools with no id-shaped argument at all: they have no subject to conflate. */
+  noIdArg: string[];
+  /** At-risk only because an argument is unclassified. Non-empty ⇒ the frame is not a reading. */
+  unclassifiedArgs: { tool: string; prop: string }[];
+  /**
+   * Properties whose NAME is not id-shaped but whose DESCRIPTION mentions an
+   * id. The catch-net for `isIdShaped` missing a candidate. Non-empty is NOT a
+   * failure — it is a list to eyeball, and it is printed so that a real miss
+   * cannot hide in a silent section.
+   */
+  catchNet: { tool: string; prop: string }[];
+  controls: {
+    /** Every PROBED tool must itself read as at-risk. If one does not, the classifier is deflating the denominator. */
+    probedAreAtRisk: { ok: boolean; total: number; atRisk: number };
+    /** A tool taking only a USER id must NOT read as at-risk — the reading the hand pass got wrong. */
+    userIdNegCtl: { tool: string; ok: boolean };
+    /** A tool with no id argument at all must NOT read as at-risk. */
+    noIdNegCtl: { tool: string; ok: boolean };
+    /** A non-empty registry. A frame over zero tools has no denominator. */
+    population: { ok: boolean; total: number };
+  };
+};
+
+/** The NEG-CTL tools, named so a test can pin them and a reader can see what was controlled. */
+export const FRAME_USER_ID_NEG_CTL = 'get_user';
+export const FRAME_NO_ID_NEG_CTL = 'search_users';
+
+/**
+ * Census the registry against the probed set. Pure — the registry is passed in,
+ * so a test drives it with literals and the CLI drives it with `TOOLS`.
+ */
+export function frameCensus(tools: RegisteredTool[], probedNames: string[]): Frame {
+  const probedSet = new Set(probedNames);
+  const rows: FrameRow[] = tools.map((t) => {
+    const props = Object.keys(t.inputSchemaJson?.properties ?? {});
+    const idArgs = props.filter(isIdShaped).map((prop) => ({ prop, referent: referentOf(t.name, prop) }));
+    const unclassified = idArgs.some((a) => a.referent === 'UNCLASSIFIED');
+    return {
+      tool: t.name,
+      idArgs,
+      // An unclassified argument counts AT-RISK: the unread row must not land
+      // in the healthy bucket (RULE 30).
+      atRisk: unclassified || idArgs.some((a) => SHAREABLE_REFERENTS.includes(a.referent)),
+      unclassified,
+      probed: probedSet.has(t.name),
+    };
+  });
+
+  const catchNet: { tool: string; prop: string }[] = [];
+  for (const t of tools) {
+    for (const [prop, schema] of Object.entries(t.inputSchemaJson?.properties ?? {})) {
+      if (isIdShaped(prop)) continue;
+      const desc = String((schema as { description?: unknown })?.description ?? '');
+      if (/\bid\b/i.test(desc)) catchNet.push({ tool: t.name, prop });
+    }
+  }
+
+  const atRiskRows = rows.filter((r) => r.atRisk);
+  const probedRows = rows.filter((r) => r.probed);
+  return {
+    rows,
+    total: rows.length,
+    atRisk: atRiskRows.map((r) => r.tool),
+    probed: probedRows.map((r) => r.tool),
+    unprobed: atRiskRows.filter((r) => !r.probed).map((r) => r.tool),
+    noIdArg: rows.filter((r) => r.idArgs.length === 0).map((r) => r.tool),
+    unclassifiedArgs: rows.flatMap((r) =>
+      r.idArgs.filter((a) => a.referent === 'UNCLASSIFIED').map((a) => ({ tool: r.tool, prop: a.prop })),
+    ),
+    catchNet,
+    controls: {
+      probedAreAtRisk: {
+        ok: probedRows.length > 0 && probedRows.every((r) => r.atRisk),
+        total: probedRows.length,
+        atRisk: probedRows.filter((r) => r.atRisk).length,
+      },
+      userIdNegCtl: {
+        tool: FRAME_USER_ID_NEG_CTL,
+        ok: rows.some((r) => r.tool === FRAME_USER_ID_NEG_CTL && !r.atRisk),
+      },
+      noIdNegCtl: {
+        tool: FRAME_NO_ID_NEG_CTL,
+        ok: rows.some((r) => r.tool === FRAME_NO_ID_NEG_CTL && !r.atRisk),
+      },
+      population: { ok: rows.length > 0, total: rows.length },
+    },
+  };
+}
+
+/** Did every frame control fire? A frame whose controls failed is not a denominator. */
+export function frameControlsOk(f: Frame): boolean {
+  return (
+    f.unclassifiedArgs.length === 0 &&
+    f.controls.probedAreAtRisk.ok &&
+    f.controls.userIdNegCtl.ok &&
+    f.controls.noIdNegCtl.ok &&
+    f.controls.population.ok
+  );
+}
+
 export type Row = {
   tool: string;
   note: string;
@@ -321,11 +564,20 @@ export type Row = {
 };
 
 export type Verdict = {
-  status: 'DISTINGUISHES' | 'CONFLATES' | 'INCONCLUSIVE';
+  /**
+   * `INCOMPLETE` is the status this card spent five hours unable to express:
+   * every probed tool distinguishes AND at-risk tools were never asked. It maps
+   * to exit 1, not 0 — coverage is a finding, and `🟢 DISTINGUISHES` over a
+   * hand-picked twelfth of the surface is the comforting reading the card
+   * exists to reject.
+   */
+  status: 'DISTINGUISHES' | 'CONFLATES' | 'INCOMPLETE' | 'INCONCLUSIVE';
   reason: string;
   conflating: string[];
   /** Write probes that were NOT refused. Non-empty means this run may have mutated prod. */
   landedWrites: string[];
+  /** AT-RISK tools this run never asked. Present on every shape, so it is printable at zero. */
+  unprobed: string[];
 };
 
 /** Decide from the rows plus every control reading. Pure, so tests can drive it. */
@@ -340,10 +592,19 @@ export function decide(args: {
    * a note tool is in `rows`.
    */
   scopeReaderControlOk?: boolean;
+  /**
+   * Optional and defaulted to absent so existing callers are unchanged: the
+   * DERIVED population the probed set is a subset of. Supply it and the verdict
+   * gains its second term; omit it and the verdict is exactly what it was —
+   * which is also the honest shape, because a caller with no registry in hand
+   * genuinely cannot state coverage.
+   */
+  frame?: Frame;
 }): Verdict {
   const conflating = args.rows.filter((r) => !r.distinguishes).map((r) => r.tool);
   const landedWrites = args.rows.filter((r) => r.write && r.landed).map((r) => r.tool);
-  const base = { conflating, landedWrites };
+  const unprobed = args.frame?.unprobed ?? [];
+  const base = { conflating, landedWrites, unprobed };
 
   // WRITE-SAFETY first, and it is the only control ordered ahead of SUBJECT.
   // Every other INCONCLUSIVE below says "this run measured nothing". This one
@@ -407,13 +668,57 @@ export function decide(args: {
   if (args.rows.length === 0) {
     return { status: 'INCONCLUSIVE', reason: 'no tool was probed — no denominator', ...base };
   }
-  return conflating.length === 0
-    ? { status: 'DISTINGUISHES', reason: `all ${args.rows.length} probed tool(s) tell the two subjects apart`, ...base }
-    : {
-        status: 'CONFLATES',
-        reason: `${conflating.length} of ${args.rows.length} probed tool(s) answer the same thing to both subjects`,
-        ...base,
-      };
+
+  // The coverage clause, appended to the headline rather than replacing it: a
+  // conflating tool is a defect and an unprobed tool is a gap, and fusing the
+  // two into one number would make each unreadable.
+  const coverage = args.frame
+    ? `, and ${unprobed.length} of ${args.frame.atRisk.length} AT-RISK tool(s) were never asked` +
+      (unprobed.length ? ` (${unprobed.join(', ')})` : '')
+    : '';
+
+  if (conflating.length > 0) {
+    return {
+      status: 'CONFLATES',
+      reason:
+        `${conflating.length} of ${args.rows.length} probed tool(s) answer the same thing to both subjects` + coverage,
+      ...base,
+    };
+  }
+
+  // Only reachable once nothing conflates. A frame whose own controls failed
+  // cannot state coverage, and "every probed tool passes" published without a
+  // denominator is the sentence this clause exists to prevent.
+  if (args.frame && !frameControlsOk(args.frame)) {
+    return {
+      status: 'INCONCLUSIVE',
+      reason:
+        'every probed tool distinguishes, but the FRAME controls did not hold — ' +
+        (args.frame.unclassifiedArgs.length
+          ? `${args.frame.unclassifiedArgs.length} id-shaped argument(s) are unclassified (` +
+            `${args.frame.unclassifiedArgs.map((a) => `${a.tool}.${a.prop}`).join(', ')})`
+          : 'a frame control failed') +
+        ' — so the probed set has no readable denominator and the pass cannot be scoped',
+      ...base,
+    };
+  }
+
+  if (unprobed.length > 0) {
+    return {
+      status: 'INCOMPLETE',
+      reason:
+        `all ${args.rows.length} probed tool(s) tell the two subjects apart` +
+        coverage +
+        ' — a pass over a hand-picked subset is not a pass over the surface',
+      ...base,
+    };
+  }
+
+  return {
+    status: 'DISTINGUISHES',
+    reason: `all ${args.rows.length} probed tool(s) tell the two subjects apart` + coverage,
+    ...base,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -553,15 +858,41 @@ async function main(): Promise<number> {
     }
   }
 
-  const verdict = decide({ rows, subjectControlOk, authControlSameAsReal, classifierControlOk, scopeReaderControlOk });
-  const code = verdict.status === 'DISTINGUISHES' ? 0 : verdict.status === 'CONFLATES' ? 1 : 2;
+  // The FRAME is derived from the registry, not from the run, so it is computed
+  // even when the subject control voided every row — "what SHOULD be probed" is
+  // a fact about this tree and does not depend on prod answering.
+  const frame = frameCensus(TOOLS as unknown as RegisteredTool[], [
+    ...PROBES.map((p) => p.tool),
+    ...DEFERRED.map((d) => d.tool),
+  ]);
+
+  const verdict = decide({
+    rows,
+    subjectControlOk,
+    authControlSameAsReal,
+    classifierControlOk,
+    scopeReaderControlOk,
+    frame,
+  });
+  const code =
+    verdict.status === 'DISTINGUISHES' ? 0 : verdict.status === 'CONFLATES' || verdict.status === 'INCOMPLETE' ? 1 : 2;
 
   const deferred = DEFERRED.filter((d) => !process.env[d.envVar]);
 
   if (asJson) {
     console.log(
       JSON.stringify(
-        { url, NOT_SHARED_TASK_ID, NEVER_REAL_TASK_ID, READABLE_SCOPE_TASK_ID, scopeReaderNotes, rows, deferred, verdict },
+        {
+          url,
+          NOT_SHARED_TASK_ID,
+          NEVER_REAL_TASK_ID,
+          READABLE_SCOPE_TASK_ID,
+          scopeReaderNotes,
+          rows,
+          deferred,
+          frame,
+          verdict,
+        },
         null,
         2,
       ),
@@ -569,7 +900,7 @@ async function main(): Promise<number> {
     return code;
   }
 
-  const glyph = { DISTINGUISHES: '🟢', CONFLATES: '🔴', INCONCLUSIVE: '⛔' }[verdict.status];
+  const glyph = { DISTINGUISHES: '🟢', CONFLATES: '🔴', INCOMPLETE: '🟡', INCONCLUSIVE: '⛔' }[verdict.status];
   console.log(`# not_shared BEHAVIOUR probe — ${url}`);
   console.log(`  axis        what the tool ANSWERS. The deploy marker reads what it SAYS — run both.`);
   console.log(`  SUBJECT CTL ${NOT_SHARED_TASK_ID} → ${subject.klass}` + (subjectControlOk ? '   ✅ exists, not shared' : '   ⛔ wrong kind of row'));
@@ -613,6 +944,62 @@ async function main(): Promise<number> {
           `${r.distinguishes ? '✅ distinguishes' : '🔴 CONFLATES'}   ${r.note}`,
       );
     }
+    console.log('');
+  }
+  // The FRAME, printed on EVERY run including a clean one. This block is the
+  // denominator every receipt on this card was missing for five hours, and a
+  // denominator that only appears when it is bad is one nobody calibrates.
+  {
+    const f = frame;
+    console.log(`  FRAME — the population the probed set is a subset OF, derived from the registry this run`);
+    console.log(`  ${String(f.total).padStart(4)}  tool(s) registered in this tree`);
+    console.log(
+      `  ${String(f.atRisk.length).padStart(4)}  AT-RISK — take an id naming a SHAREABLE row (${SHAREABLE_REFERENTS.join('/')})`,
+    );
+    console.log(`  ${String(f.probed.length).padStart(4)}  probed by this script (incl. DEFERRED, which is named below)`);
+    console.log(
+      `  ${String(f.unprobed.length).padStart(4)}  ${f.unprobed.length ? '🔴' : '✅'} AT-RISK but NEVER PROBED` +
+        (f.unprobed.length ? '  — full list, no cap: this is a to-do list' : '  — the frame is covered'),
+    );
+    for (const t of f.unprobed) {
+      const row = f.rows.find((r) => r.tool === t)!;
+      console.log(`        ${t.padEnd(22)} ${row.idArgs.map((a) => `${a.prop}:${a.referent}`).join(' ')}`);
+    }
+    console.log(
+      `  ${String(f.noIdArg.length).padStart(4)}  take no id at all — no subject to conflate (${f.noIdArg.join(', ')})`,
+    );
+    console.log(
+      `  ${String(f.total - f.atRisk.length - f.noIdArg.length).padStart(4)}  take an id of a NON-shareable row — ` +
+        f.rows
+          .filter((r) => !r.atRisk && r.idArgs.length > 0)
+          .map((r) => `${r.tool}(${r.idArgs.map((a) => a.referent).join('/')})`)
+          .join(', '),
+    );
+    // Every control printed at its value, pass or fail: a control you only see
+    // when it fires is indistinguishable from one that never ran.
+    const c = f.controls;
+    console.log(
+      `  CTL  probed⊆at-risk  ${c.probedAreAtRisk.atRisk}/${c.probedAreAtRisk.total}` +
+        (c.probedAreAtRisk.ok ? '   ✅ the classifier is not deflating the denominator' : '   ⛔ a PROBED tool reads as not-at-risk'),
+    );
+    console.log(
+      `  CTL  user-id NEG    ${c.userIdNegCtl.tool}` +
+        (c.userIdNegCtl.ok ? '   ✅ correctly NOT at-risk — a user id is not a shareable row' : '   ⛔ fires — keyed on form, not referent'),
+    );
+    console.log(
+      `  CTL  no-id   NEG    ${c.noIdNegCtl.tool}` +
+        (c.noIdNegCtl.ok ? '   ✅ correctly NOT at-risk' : '   ⛔ fires'),
+    );
+    console.log(
+      `  CTL  unclassified   ${f.unclassifiedArgs.length}` +
+        (f.unclassifiedArgs.length === 0
+          ? '   ✅ every id-shaped argument resolves to a referent'
+          : `   ⛔ ${f.unclassifiedArgs.map((a) => `${a.tool}.${a.prop}`).join(', ')} — counted AT-RISK, frame voided`),
+    );
+    console.log(
+      `  CTL  catch-net      ${f.catchNet.length} non-id-shaped propert(y/ies) whose DESCRIPTION mentions an id` +
+        (f.catchNet.length ? `   — eyeball: ${f.catchNet.map((a) => `${a.tool}.${a.prop}`).join(', ')}` : '   ✅ none'),
+    );
     console.log('');
   }
   // Printed, never dropped: a row removed from the findings list silently
