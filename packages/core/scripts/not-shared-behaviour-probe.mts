@@ -578,15 +578,42 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
  * hands the following runner a conclusion and a reason; only the reason is
  * transferable, and it still has to be run.
  *
- * 🎯 **The next candidate is `report_shipped(taskId=…)`,** and it is named as a
- * CANDIDATE rather than as a lead, which is the whole point of the paragraph
- * above. Its assert order is trivially right — one task-id argument, no fixture
- * to design — and that settles nothing. The open question is the blast radius:
- * an unrefused call writes a row into the HUMAN's shipped feed, which is the
- * first probe on this table whose artifact lands in someone else's view rather
- * than the caller's. Measure that before encoding it.
+ * 🔴 **`report_shipped(taskId=…)` was that candidate, it was measured, and the
+ * answer is no** (2026-09-15 07:4xZ, `npm run report-shipped-blast-radius`, 5
+ * controls, all fired). The open question the candidate carried was the right
+ * one, and the answer is a THIRD shape rather than a repeat of the other two:
+ *
+ * ```
+ * delete_task     the artifact is GONE       → WRITE-SAFETY has nothing to detect with
+ * update_note     the artifact is ORPHANED   → invisible to everyone, including the human
+ * report_shipped  the artifact is DELIVERED  → invisible to the CALLER, visible to the HUMAN
+ * ```
+ *
+ * `reportShipped` writes `userId: task.userId` (`focus.ts:230`) while all three
+ * readers key on `ctx.userId` (`focus.ts:78`, `:102`, `:262`). A not-shared
+ * subject is owned by somebody else by definition, so the row it mints is owned
+ * by somebody else too: it lands in that human's *"shipped because of past
+ * answers"* feed — asserting that something went public — and the caller can
+ * neither read it, enumerate it nor delete it. THIRD-PARTY-CTL is the leg that
+ * distinguishes this from orphaning: read as the OWNER the row is right there,
+ * with the prober's title on it.
+ *
+ * 🎯 **The next candidate is `attach_file_from_url(taskId=…)`,** named as a
+ * CANDIDATE with its open question attached (precondition 18). Its assert order
+ * is not yet read, and that is the cheap half. The open question is a blast
+ * radius with a leg none of the four before it had: the write is preceded by a
+ * SERVER-SIDE FETCH of a caller-supplied URL, so an unrefused call has an
+ * effect off this box before it has one in the database, and "is the artifact
+ * repairable?" does not cover it. Measure that — and note that its sibling
+ * `attach_file` is already a PROBED row, which is exactly the "it has the same
+ * shape" argument precondition 18 retires.
  */
-export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT'; reason: string; discharge: string }[] = [
+export const UNPROBEABLE: {
+  tool: string;
+  kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT' | 'THIRD-PARTY-ARTIFACT';
+  reason: string;
+  discharge: string;
+}[] = [
   {
     tool: 'delete_task',
     kind: 'UNSAFE-SUBJECT',
@@ -623,6 +650,20 @@ export const UNPROBEABLE: { tool: string; kind: 'UNSAFE-SUBJECT' | 'NOTE-SUBJECT
       '`npm run note-scope-blast-radius`',
     discharge:
       'an ownership root for notes (brain_notes has none when scope_task_id is set), or a build whose access assert can be read directly',
+  },
+  // `report_shipped` — the row the 2026-09-15 06:2xZ receipt named as the next
+  // CANDIDATE, with the open question attached rather than a conclusion. The
+  // question was answered by measurement and the answer is no — the probe and
+  // its five controls are in `scripts/report-shipped-blast-radius-probe.mts`.
+  {
+    tool: 'report_shipped',
+    kind: 'THIRD-PARTY-ARTIFACT',
+    reason:
+      'an unrefused call is not lost, it is DELIVERED: reportShipped writes `userId: task.userId` while every reader ' +
+      'keys on `ctx.userId`, so the row lands in the TASK OWNER\'S shipped feed claiming something went public, and ' +
+      'the caller can neither read, enumerate nor delete it — measured, `npm run report-shipped-blast-radius`',
+    discharge:
+      'a focus-event reader scoped to the CALLER (the MCP surface has none at all today), or a build whose access assert can be read directly',
   },
 ];
 

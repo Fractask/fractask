@@ -33,7 +33,8 @@
     "note-scope-blast-radius": "tsx scripts/note-scope-blast-radius-probe.mts",
     "scratch-file-blast-radius": "tsx scripts/scratch-file-blast-radius-probe.mts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "report-shipped-blast-radius": "tsx scripts/report-shipped-blast-radius-probe.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.41.0",

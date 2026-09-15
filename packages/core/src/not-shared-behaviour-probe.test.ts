@@ -920,7 +920,7 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
   it('names all three remaining tools, each with a reason and a discharge', () => {
     assert.deepEqual(
       UNPROBEABLE.map((u) => u.tool).sort(),
-      ['delete_note', 'delete_task', 'move_note', 'update_note'],
+      ['delete_note', 'delete_task', 'move_note', 'report_shipped', 'update_note'],
     );
     for (const u of UNPROBEABLE) {
       assert.ok(u.reason.length > 0, `${u.tool} needs a reason`);
@@ -953,6 +953,36 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
       !PROBES.some((p) => p.tool === 'update_note'),
       'update_note must not be a probed row — an unrefused write orphans the fixture with no undo',
     );
+  });
+
+  it('report_shipped is a THIRD shape — the artifact is DELIVERED, not gone and not orphaned', () => {
+    // The 06:2xZ receipt named it as a CANDIDATE with its open question
+    // attached (precondition 18): the assert order is trivially right and
+    // settles nothing; the question is where an unrefused write lands. It was
+    // measured, and the answer needed a kind of its own — filing it as
+    // UNSAFE-SUBjECT alongside update_note would have said "the artifact is
+    // lost", and the remedy that follows from that ("give the caller a reader")
+    // is the wrong remedy for a row that is sitting in a human's feed.
+    const rs = UNPROBEABLE.find((u) => u.tool === 'report_shipped')!;
+    assert.equal(rs.kind, 'THIRD-PARTY-ARTIFACT');
+    assert.match(rs.reason, /DELIVERED/, 'the reason must say where the artifact went, not just that it is unreachable');
+    assert.match(rs.reason, /report-shipped-blast-radius/, 'the reason must name the command that measured it');
+    assert.ok(
+      !PROBES.some((p) => p.tool === 'report_shipped'),
+      'report_shipped must not be a probed row — an unrefused call posts to the human feed with no undo',
+    );
+    // Its discharge is NOT the same as the note rows'. Naming an env var would
+    // be wrong here: no subject this caller can mint fixes it, because the gap
+    // is in who OWNS the row that gets written.
+    assert.match(rs.discharge, /reader scoped to the CALLER|access assert can be read directly/);
+  });
+
+  it('the three kinds are three different reasons, and each is used by at least one row', () => {
+    // RULE 36's shape: a bucket named for a REASON reads as disposal. Three
+    // distinct kinds keep the reasons from collapsing into "deferred", which is
+    // what happened when all four were "destructive paths".
+    const kinds = new Set(UNPROBEABLE.map((u) => u.kind));
+    assert.deepEqual([...kinds].sort(), ['NOTE-SUBJECT', 'THIRD-PARTY-ARTIFACT', 'UNSAFE-SUBJECT']);
   });
 
   it('says out loud that WRITE-SAFETY cannot cover a delete', () => {
@@ -1055,6 +1085,15 @@ describe('scratchpad_file — reachability is not blast radius, and only the sec
     assert.equal(args.taskId, 'SUBJECT', 'the subject under test must be the FILING TARGET');
     assert.equal(args.id, SCRATCH_FIXTURE_ENTRY_ID, 'the id slot must hold the caller-owned entry');
     assert.notEqual(args.id, 'SUBJECT');
+  });
+
+  it('is NOT in UNPROBEABLE, unlike the two rows whose assert order it shares', () => {
+    // update_note has the IDENTICAL assert order and is UNSAFE-SUBJECT;
+    // report_shipped's assert order is even simpler and it is UNPROBEABLE too.
+    // If the order were the criterion all three would have the same verdict.
+    assert.ok(!UNPROBEABLE.some((u) => u.tool === 'scratchpad_file'));
+    assert.ok(UNPROBEABLE.some((u) => u.tool === 'update_note'));
+    assert.ok(UNPROBEABLE.some((u) => u.tool === 'report_shipped'));
   });
 
   it('is NOT in UNPROBEABLE — and the reason is the access rule, not the assert order', () => {

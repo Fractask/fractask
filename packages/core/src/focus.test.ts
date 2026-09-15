@@ -23,6 +23,7 @@ import {
 } from './prompts.js';
 import {
   creditSeconds,
+  deleteLatestFocusEvent,
   getFocusDaySummary,
   getFocusTimeRows,
   listFocusEvents,
@@ -366,6 +367,62 @@ describe('report_shipped + ship feed', () => {
     assert.ok(item, 'ship appears in the OWNER feed even when an agent reported it');
     assert.equal(item!.title, 'Wholesale shop — pages live');
     assert.equal(item!.url, 'https://example.com/shop');
+  });
+
+  // ── the same property, read as a blast radius ───────────────────────────────
+  //
+  // The test above is the FEATURE: `reportShipped` writes `userId: task.userId`
+  // so the ship lands in the human's feed no matter who reported it. This test
+  // pins the other face of that one line, because it is what makes
+  // `report_shipped` UNPROBEABLE on `Tx5g85uLq96D` (kind THIRD-PARTY-ARTIFACT,
+  // measured by `npm run report-shipped-blast-radius`):
+  //
+  //   writer   focus.ts  userId: task.userId   ← the OWNER
+  //   readers  focus.ts  eq(focusEvents.userId, ctx.userId)   ← the CALLER
+  //
+  // A not-shared subject is owned by somebody else by definition, so an
+  // unrefused call on one mints a row the caller cannot read, cannot enumerate
+  // and cannot delete — while the human sees a claim that something shipped.
+  // That is not `delete_task` (artifact gone) and not `update_note` (artifact
+  // orphaned): the artifact is intact and it has an audience of exactly the one
+  // party who must not see it.
+  //
+  // ⚠️ This test pins the ASYMMETRY, not the probe. If a future change scopes a
+  // focus-event reader to the reporter — or writes `byUserId` as a second
+  // owner — this reds, and that is precisely the moment someone should be told
+  // the row became probeable again and the UNPROBEABLE entry can be discharged.
+  it('the REPORTER cannot read, enumerate or undo what it reported — the blast radius', async () => {
+    const t = await botTask('shipped-blast-radius');
+    await reportShipped(botCtx, { taskId: t.id, title: 'a ship the reporter cannot see' });
+
+    // readable / enumerable, by every reader the reporter has
+    assert.equal(
+      (await listFocusEvents(botCtx, { taskId: t.id, types: ['shipped'] })).length,
+      0,
+      'listFocusEvents keys on ctx.userId, so the reporter sees none of its own ship',
+    );
+    assert.equal(
+      (await listShippedFeed(botCtx)).filter((s) => s.taskId === t.id).length,
+      0,
+      'listShippedFeed keys on ctx.userId — the reporter has no feed of its own ships',
+    );
+
+    // repairable — the undo path is keyed the same way, so there is none
+    assert.equal(
+      await deleteLatestFocusEvent(botCtx, { taskId: t.id, types: ['shipped'] }),
+      false,
+      'the reporter cannot undo its own report',
+    );
+
+    // …and the row is neither gone nor orphaned: it is in the owner's feed.
+    assert.equal(
+      (await listShippedFeed(ctx)).filter((s) => s.taskId === t.id).length,
+      1,
+      'DELIVERED, not lost — this is the leg that separates it from update_note',
+    );
+    // The owner CAN undo it, which is what "unrepairable BY THIS CALLER" means:
+    // the capability exists, it just does not belong to the party that wrote it.
+    assert.equal(await deleteLatestFocusEvent(ctx, { taskId: t.id, types: ['shipped'] }), true);
   });
 });
 
