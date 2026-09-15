@@ -206,8 +206,22 @@ export async function listBrainNotes(
 ): Promise<BrainNote[]> {
   const f = listBrainNotesFilterSchema.parse(filter);
   const db = getDb();
+  // Same rule as searchBrainNotes below: the guard runs at EVERY empty exit.
+  // The accessible-notes early return under this comment produces `[]` without
+  // ever reaching the post-query guard, and a caller who owns no notes at all
+  // is exactly the caller most likely to be listing a scope someone else owns.
+  // Measured on this tree before the fix: list_notes answered `[]` to a hidden
+  // scope and to a never-real id alike in that world, while searchBrainNotes —
+  // which already guarded every exit — distinguished them.
+  const guardFilters = async () => {
+    if (typeof f.scopeTaskId === 'string') await assertFilterIdNotHidden(ctx, f.scopeTaskId);
+    if (typeof f.parentNoteId === 'string') await assertNoteFilterIdNotHidden(ctx, f.parentNoteId);
+  };
   const accessibleIds = await getAccessibleNoteIds(ctx);
-  if (accessibleIds.length === 0) return [];
+  if (accessibleIds.length === 0) {
+    await guardFilters();
+    return [];
+  }
   const conditions = [inArray(brainNotes.id, accessibleIds)];
   if (f.scopeTaskId !== undefined) {
     conditions.push(
@@ -233,8 +247,7 @@ export async function listBrainNotes(
   // reads as "this scope holds no notes". Two id arguments, two object types —
   // a scope TASK and a parent NOTE — so two guards, checked empty-result-only.
   if (rows.length === 0) {
-    if (typeof f.scopeTaskId === 'string') await assertFilterIdNotHidden(ctx, f.scopeTaskId);
-    if (typeof f.parentNoteId === 'string') await assertNoteFilterIdNotHidden(ctx, f.parentNoteId);
+    await guardFilters();
   }
   return rows;
 }

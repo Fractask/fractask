@@ -163,8 +163,23 @@ async function nextPosition(ctx: Context, parentId: string | null): Promise<numb
 export async function listTasks(ctx: Context, filter: ListTasksFilter = {}): Promise<Task[]> {
   const db = getDb();
   const f = listTasksFilterSchema.parse(filter);
+  // The guard runs at EVERY empty exit, not only after the query — this
+  // function has an early return above it, and that return produces the very
+  // `[]` the guard exists to explain. A caller whose accessible set is empty is
+  // precisely the caller most likely to be holding an id they cannot read (a
+  // freshly provisioned agent, or one whose shares were revoked), so guarding
+  // only the post-query exit leaves the guard dead for the case it is for.
+  // Measured on this tree before the fix: `list_tasks(parentId=<hidden>)`
+  // answered `[]` to a hidden parent and to a never-real id alike whenever the
+  // caller owned nothing. See scripts/not-shared-local-collection-probe.mts.
+  const guardParent = async () => {
+    if (typeof f.parentId === 'string') await assertFilterIdNotHidden(ctx, f.parentId);
+  };
   const accessibleIds = await getAccessibleTaskIds(ctx);
-  if (accessibleIds.length === 0) return [];
+  if (accessibleIds.length === 0) {
+    await guardParent();
+    return [];
+  }
   const conditions = [inArray(tasks.id, accessibleIds)];
   if (f.deep && (f.parentId === null || f.parentId === undefined)) {
     // Deep query: no parent constraint at all, so the other filters match
@@ -218,8 +233,8 @@ export async function listTasks(ctx: Context, filter: ListTasksFilter = {}): Pro
   // subtree is empty" rather than as a failure. Checked only when the answer is
   // already empty — a caller assigned a child of an unreachable parent still
   // gets its rows, exactly as before. See assertFilterIdNotHidden.
-  if (rows.length === 0 && typeof f.parentId === 'string') {
-    await assertFilterIdNotHidden(ctx, f.parentId);
+  if (rows.length === 0) {
+    await guardParent();
   }
   return rows;
 }

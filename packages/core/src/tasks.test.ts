@@ -1648,6 +1648,68 @@ describe('the COLLECTION partition — a hidden filter id answered with the SUCC
   it('search_notes — the guard is not below the early returns (empty query)', () =>
     rejectsNotShared(() => searchBrainNotes(ctx, '   ', { scopeTaskId: hiddenScope })));
 
+  // ── The same hazard, asked of the two tools it was never asked of ──────────
+  //
+  // The test directly above has pinned this for `search_notes` since the guard
+  // shipped. `listTasks` and `listBrainNotes` open with the identical
+  // `if (accessibleIds.length === 0) return []`, and nothing asked them — so
+  // both stayed dead for that caller while the suite read as covering the rule.
+  // The lesson had been learned in one function and never crossed to its two
+  // siblings, which is why the covering test has to name the CALLER, not the
+  // tool: `ctx` owns rows by the time these run, so it can never enter the
+  // branch. Measured on this tree before the fix, with a caller owning nothing:
+  //
+  //   list_tasks(parentId=<hidden, has children>)   []   ← same as never-real
+  //   list_notes(scopeTaskId=<hidden, has a note>)  []   ← same as never-real
+  //   search_notes(scopeTaskId=<hidden>)            not_shared   ← the sibling that guarded
+  describe('a caller whose accessible set is EMPTY — the early-return branch', () => {
+    let virgin: Context;
+
+    before(async () => {
+      virgin = { userId: nanoid(12) };
+      await getDb()
+        .insert(users)
+        .values({
+          id: virgin.userId,
+          email: null,
+          name: 'owns-nothing',
+          googleId: null,
+          image: null,
+          createdAt: Date.now(),
+        });
+      // PRECONDITION — this caller really is in the branch under test. Without
+      // it the tests below would still pass from the post-query guard and prove
+      // nothing about the early return at all.
+      assert.equal((await listTasks(virgin, {})).length, 0, 'virgin caller must own no tasks');
+      assert.equal((await listBrainNotes(virgin, {})).length, 0, 'virgin caller must own no notes');
+    });
+
+    it('list_tasks still distinguishes not_shared from not there', () =>
+      rejectsNotShared(() => listTasks(virgin, { parentId: hiddenParent })));
+
+    it('list_notes still distinguishes not_shared from not there', () =>
+      rejectsNotShared(() => listBrainNotes(virgin, { scopeTaskId: hiddenScope })));
+
+    it('search_notes still does too — the sibling that was already right', () =>
+      rejectsNotShared(() => searchBrainNotes(virgin, 'anything', { scopeTaskId: hiddenScope })));
+
+    // NEG — the branch must not become a blanket "throw when I own nothing".
+    // A never-real id is still `[]` for this caller, so the three rows above
+    // are about SHARING and not about the caller being empty.
+    it('and a never-real id is still [] for that same caller', async () => {
+      assert.deepEqual(await listTasks(virgin, { parentId: 'zzzNEVERREAL9' }), []);
+      assert.deepEqual(await listBrainNotes(virgin, { scopeTaskId: 'zzzNEVERREAL9' }), []);
+      assert.deepEqual(await searchBrainNotes(virgin, 'anything', { scopeTaskId: 'zzzNEVERREAL9' }), []);
+    });
+
+    // NEG — an unfiltered list from an empty caller must stay `[]` rather than
+    // throw. This is the query the fix could most easily have broken.
+    it('an unfiltered list from that caller is still a plain []', async () => {
+      assert.deepEqual(await listTasks(virgin, {}), []);
+      assert.deepEqual(await listBrainNotes(virgin, {}), []);
+    });
+  });
+
   // The half that stops this being a blanket relabel, in three directions.
   it('a never-real filter id still answers [] — not not_shared', async () => {
     assert.deepEqual(await listTasks(ctx, { parentId: 'zzzNEVERREAL9' }), []);
