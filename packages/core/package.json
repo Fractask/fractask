@@ -38,7 +38,8 @@
     "scratch-subject-reachability": "tsx scripts/scratch-subject-reachability-probe.mts",
     "append-rule": "tsx scripts/append-rule.mts",
     "amend-rule": "tsx scripts/amend-rule.mts",
-    "afu-order": "tsx scripts/attach-from-url-order-probe.mts"
+    "afu-order": "tsx scripts/attach-from-url-order-probe.mts",
+    "not-shared-note-subject": "tsx scripts/not-shared-note-subject.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.41.0",
