@@ -205,6 +205,28 @@ export const PROBE_COMMENT_BODY = 'NOT-SHARED PROBE — must never be posted (no
 export const PROBE_NOTE_TITLE = 'NOT-SHARED PROBE — must never be created (not-shared-behaviour-probe, note)';
 
 /**
+ * The `create_upload` probe's filename — and the one marker on this file that
+ * would NOT help you find the damage, which is why it carries this note.
+ *
+ * `createUploadTicket` (`src/attachments.ts:299`) asserts access and then mints
+ * a presigned PUT. It inserts **no row**: the attachment only exists once
+ * `finalize_upload` is called. Measured 2026-09-15 02:4xZ against prod on a
+ * READABLE subject — the call answered with an `attachmentId` and an upload
+ * URL, and `list_attachments` on that same task then returned `[]`, with
+ * `delete_attachment` on the returned id answering `not_found` identically to a
+ * never-real id.
+ *
+ * So for this row the WRITE-SAFETY control's usual advice — *go and look for
+ * the artifact* — does not apply, and saying it anyway would be worse than
+ * saying nothing. What an unrefused `create_upload` leaks is not an object but
+ * a **capability**: a signed write grant into someone else's storage prefix,
+ * valid for `UPLOAD_TTL_SECONDS`, that no enumerator on this surface can see.
+ * It is the quietest of the six write probes by some distance, and the source
+ * comment at the access check says so in as many words.
+ */
+export const PROBE_UPLOAD_FILENAME = 'not-shared-probe-create-upload.txt';
+
+/**
  * One probed tool: a name plus how it names the subject in its own arguments.
  *
  * `write: true` marks a call that would MUTATE if it were not refused. Those
@@ -282,6 +304,28 @@ export const PROBES: Probe[] = [
     note: 'WRITE — the note surface\'s create path; its scope arg is the same kind of id the 3 CONFLATING tools take',
     write: true,
   },
+  // `create_upload(taskId=…)` — the FIRST row drawn from the frame's own
+  // to-do list rather than from the fix brief or from a sibling's surface.
+  // Measured by hand against prod on 2026-09-15 02:4xZ before it was encoded:
+  // NOT_SHARED / NOT_FOUND, both legs refused.
+  //
+  // It is worth a row rather than being assumed from `attach_file` — already
+  // green two rows up, on the same attachment surface — for the reason this
+  // card keeps re-learning: the two reach the access assert by different
+  // paths. `attach_file` gets there through `resolveAttachmentParent` from
+  // `addAttachment`; `create_upload` calls `createUploadTicket`, which is the
+  // only one of the pair that hands the caller a credential.
+  //
+  // And it is the row where a MISS would be least visible. The other five
+  // write probes leave a greppable artifact; this one leaves a signed PUT URL
+  // into another owner's prefix and nothing in any tree — see
+  // `PROBE_UPLOAD_FILENAME`.
+  {
+    tool: 'create_upload',
+    args: (id) => ({ taskId: id, filename: PROBE_UPLOAD_FILENAME, mimeType: 'text/plain', sizeBytes: 21 }),
+    note: 'WRITE — mints a signed write grant; an unrefused answer leaves no artifact to find',
+    write: true,
+  },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
   // The NOTE surface. `scopeTaskId` IS a task id, so these two take the same
   // subject pair as `list_tasks` — the rows are the right kind of row without
@@ -317,6 +361,82 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
     envVar: 'NOT_SHARED_NOTE_ID',
   },
 ];
+
+/**
+ * ## ADMIN-GATED — at-risk, unprobed, and unprobeable *by this caller*
+ *
+ * Three of the frame's at-risk tools declare `adminOnly` and `await
+ * assertAdmin(ctx)` as the FIRST statement of their handler, ahead of the zod
+ * parse and therefore ahead of any access assert on the subject id. For a
+ * non-admin caller they answer `This action requires a workspace admin.` to
+ * every subject alike — so a probe here would score `CONFLATES` off the
+ * **authorization** layer while saying nothing at all about the **access**
+ * layer, which is the only thing this card measures.
+ *
+ * That is RULE 37 in its exact form: a control can be perfectly aimed and still
+ * be answered before it reaches the subject. The reading is real — measured
+ * 2026-09-15 02:4xZ, `office_venture` on all three of a readable id, the
+ * not-shared id and a never-real id → byte-identical admin refusals — but it is
+ * a reading of the wrong layer, and publishing it as a 4th conflating tool
+ * would have been a fabricated defect more alarming than anything here.
+ *
+ * ⚠️ **These rows do NOT leave the unprobed count.** They are still at-risk:
+ * an admin caller reaches the same access assert every other row does, and
+ * nothing here has measured it. Naming the reason shrinks the FINDINGS text,
+ * never the gate — a bucket named for *why* a row was excluded reads as
+ * disposal, and nobody re-asks the other questions of a row already explained.
+ * So the frame keeps counting them and the to-do list prints the reason inline.
+ *
+ * **The deferral has an expiring precondition, so it carries its own control.**
+ * "This caller is not an admin" is true today and is one grant away from being
+ * false; `3m8XbdCFyPKu` added admin scope to this very workspace. `ADMIN CTL`
+ * therefore re-asks it every run against a subject this caller CAN read: if the
+ * admin gate stops answering, the deferral is void and the row must be probed.
+ * A limit that cannot notice its own precondition lapsing is a limit that
+ * silently becomes a lie.
+ */
+export const ADMIN_GATED: { tool: string; reason: string }[] = [
+  { tool: 'office_venture', reason: 'adminOnly — assertAdmin() answers before the subject assert' },
+  { tool: 'share_task', reason: 'adminOnly — assertAdmin() answers before the subject assert' },
+  { tool: 'provision_agent', reason: 'adminOnly — assertAdmin() answers before the subject assert' },
+];
+
+/** The refusal `assertAdmin` emits. Matched as a prefix-free substring, not as a marker position. */
+export const ADMIN_REFUSAL = 'requires a workspace admin';
+
+/**
+ * Did the admin gate answer, on a subject this caller can read?
+ *
+ * `true` = still gated, the deferral holds. `false` = the gate did NOT fire on
+ * a readable subject, so this caller now reaches the handler body and the row
+ * is probeable — the deferral is stale and must be discharged.
+ */
+export function adminGateStillClosed(a: { isError: boolean; text: string }): boolean {
+  return a.isError && a.text.includes(ADMIN_REFUSAL);
+}
+
+/**
+ * The ADMIN-CTL call's arguments: the subject id under the name that tool uses
+ * for it, and **deliberately nothing else**.
+ *
+ * Two of these three are the most destructive tools in the registry —
+ * `share_task` grants another identity access, `provision_agent` mints a user
+ * and a token — so a control that pokes them has to be safe in the world where
+ * it *fires*, not only in the world where it is refused. It is: `assertAdmin`
+ * runs first, and if it ever stops answering, the zod parse is next and these
+ * argument objects cannot satisfy it (`share_task` requires one of
+ * `userId`/`email`, `provision_agent` requires `name`). So the gate opening
+ * turns this control into a validation error, never into a grant.
+ *
+ * That ordering is the control's real precondition, and it is why the subject
+ * id is the only thing supplied. Adding the missing fields to "make the probe
+ * more realistic" would turn a safe reading into a live share.
+ */
+export function adminGateProbeArgs(tool: string, subjectId: string): Record<string, unknown> {
+  const prop =
+    tool === 'office_venture' ? 'entityId' : tool === 'provision_agent' ? 'shareTaskId' : 'taskId';
+  return { [prop]: subjectId };
+}
 
 /**
  * A scope this caller CAN read, holding at least one note. Without it the two
@@ -621,7 +741,10 @@ export function decide(args: {
         `"${PROBE_COMMENT_BODY}", for a NOTE titled "${PROBE_NOTE_TITLE}" (enumerable only via ` +
         'list_notes(scopeTaskId=…), which CONFLATES — so check get_note on the id the call returned), ' +
         'and for attachments named ' +
-        '"not-shared-probe.txt" before trusting anything else here',
+        '"not-shared-probe.txt" before trusting anything else here. ' +
+        `⚠️ create_upload is the exception: it leaves NO artifact to look for — a "${PROBE_UPLOAD_FILENAME}" ` +
+        'grant is a signed PUT URL into another owner\'s storage prefix, visible to no enumerator ' +
+        'and expiring on its own, so if that row is in the list above, treat the credential as leaked',
       ...base,
     };
   }
@@ -806,6 +929,7 @@ async function main(): Promise<number> {
   const classifierControlOk = classify(false, '{"id":"x","title":"a real row"}') === 'OTHER_OK';
 
   const rows: Row[] = [];
+  const adminGateReadings: { tool: string; closed: boolean; klass: Klass }[] = [];
   let authControlSameAsReal = false;
   // SCOPE-READER control: a scope this caller CAN read must yield a note.
   let scopeReaderNotes = -1;
@@ -840,6 +964,15 @@ async function main(): Promise<number> {
       const ctlReal = await callTool(url, AUTH_NEG_CTL_TOKEN, witness.tool, probe.args(NEVER_REAL_TASK_ID));
       authControlSameAsReal =
         ctlShared.klass === witness.notShared && ctlReal.klass === witness.neverReal;
+    }
+
+    // ADMIN-GATE control. Asked against a subject this caller CAN read, so a
+    // closed gate is a fact about the credential and not about the subject —
+    // the whole point of the deferral is that these tools answer the same
+    // thing to every id, readable or not.
+    for (const g of ADMIN_GATED) {
+      const a = await callTool(url, auth, g.tool, adminGateProbeArgs(g.tool, READABLE_SCOPE_TASK_ID));
+      adminGateReadings.push({ tool: g.tool, closed: adminGateStillClosed(a), klass: a.klass });
     }
 
     // Deferred rows, probed only once their own subject is supplied.
@@ -935,6 +1068,22 @@ async function main(): Promise<number> {
           : '   ⛔ the note rows below are about the READER'
         : '   — not run (subject control failed first)'),
   );
+  {
+    // Printed at zero and at full, every run. This control's job is to notice
+    // its own precondition lapsing, so a run where it is silent is exactly the
+    // run where it would be useless.
+    const open = adminGateReadings.filter((r) => !r.closed);
+    console.log(
+      `  ADMIN CTL   ${adminGateReadings.length} admin-gated tool(s) re-asked on a READABLE subject — ${open.length} now reachable` +
+        (!subjectControlOk
+          ? '   — not run (subject control failed first)'
+          : adminGateReadings.length === 0
+            ? '   — none declared'
+            : open.length === 0
+              ? '   ✅ still gated, so the deferral holds and the rows stay unprobed'
+              : `   ⛔ ${open.map((r) => r.tool).join(', ')} — the deferral is STALE, probe these now`),
+    );
+  }
   console.log('');
   if (rows.length) {
     console.log(`  tool               not-shared subject   never-real subject   verdict`);
@@ -963,7 +1112,18 @@ async function main(): Promise<number> {
     );
     for (const t of f.unprobed) {
       const row = f.rows.find((r) => r.tool === t)!;
-      console.log(`        ${t.padEnd(22)} ${row.idArgs.map((a) => `${a.prop}:${a.referent}`).join(' ')}`);
+      // The reason is printed INLINE, on the row, inside the to-do list — not
+      // lifted out into a bucket of its own. An explained row that moves
+      // somewhere else stops being counted by the reader even when the number
+      // above still counts it.
+      const gated = ADMIN_GATED.find((g) => g.tool === t);
+      const reading = adminGateReadings.find((r) => r.tool === t);
+      const why = gated
+        ? reading && !reading.closed
+          ? '   ⛔ ADMIN-GATE OPEN — was deferred as admin-only; this caller now reaches it. PROBE IT'
+          : `   ⚪ ADMIN-GATED: ${gated.reason} — still at-risk, still counted, not probeable by this caller`
+        : '';
+      console.log(`        ${t.padEnd(22)} ${row.idArgs.map((a) => `${a.prop}:${a.referent}`).join(' ')}${why}`);
     }
     console.log(
       `  ${String(f.noIdArg.length).padStart(4)}  take no id at all — no subject to conflate (${f.noIdArg.join(', ')})`,

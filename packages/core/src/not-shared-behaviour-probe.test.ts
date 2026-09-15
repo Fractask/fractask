@@ -32,6 +32,11 @@ import {
   SHAREABLE_REFERENTS,
   FRAME_USER_ID_NEG_CTL,
   FRAME_NO_ID_NEG_CTL,
+  ADMIN_GATED,
+  ADMIN_REFUSAL,
+  adminGateStillClosed,
+  adminGateProbeArgs,
+  PROBE_UPLOAD_FILENAME,
   type Row,
   type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
@@ -374,7 +379,7 @@ describe('the probed set', () => {
     // The WRITE-SAFETY control is only as wide as this flag: a write probe
     // added without it is watched by nothing.
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
-    assert.deepEqual(writes, ['attach_file', 'create_note', 'create_task', 'post_comment', 'update_task']);
+    assert.deepEqual(writes, ['attach_file', 'create_note', 'create_task', 'create_upload', 'post_comment', 'update_task']);
     for (const readOnly of ['get_task', 'list_comments', 'list_prompts', 'list_attachments', 'list_tasks', 'list_notes', 'search_notes']) {
       assert.ok(!PROBES.find((p) => p.tool === readOnly)!.write, `${readOnly} is a read and must not be flagged`);
     }
@@ -688,5 +693,92 @@ describe('INCOMPLETE — the status the exit contract was missing', () => {
     const v = decide({ ...prodToday(), subjectControlOk: false, frame: coveredFrame });
     assert.equal(v.status, 'INCONCLUSIVE');
     assert.match(v.reason, /did not read as not-shared/);
+  });
+});
+
+describe('create_upload — the first row taken from the frame\'s own to-do list', () => {
+  it('is probed, and probed as a WRITE', () => {
+    const p = PROBES.find((x) => x.tool === 'create_upload');
+    assert.ok(p, 'create_upload must be a probed row — it was #3 on the frame\'s never-probed list');
+    assert.equal(p!.write, true, 'it mints a signed PUT into someone else\'s prefix; a non-refusal is a write');
+  });
+
+  it('names its subject with taskId, so the probe actually reaches the access assert', () => {
+    const args = PROBES.find((x) => x.tool === 'create_upload')!.args(NOT_SHARED_TASK_ID);
+    assert.equal(args.taskId, NOT_SHARED_TASK_ID);
+    assert.equal(args.filename, PROBE_UPLOAD_FILENAME);
+  });
+
+  it('is NOT assumed from attach_file — both are present, and they are different rows', () => {
+    // The card's recurring failure is a call site believed covered by a
+    // sibling's guarantee. attach_file reaches the assert via
+    // resolveAttachmentParent from addAttachment; create_upload via
+    // createUploadTicket. Same surface, two paths, two rows.
+    assert.ok(PROBES.some((x) => x.tool === 'attach_file'));
+    assert.ok(PROBES.some((x) => x.tool === 'create_upload'));
+  });
+
+  it('the WRITE-SAFETY reason tells the reader this row leaves NOTHING to look for', () => {
+    // Every other write probe's remedy is "go and find the artifact". For this
+    // one that advice is false, and false remediation advice is worse than
+    // none: it sends the reader to an enumerator that cannot see the damage.
+    const v = decide({
+      rows: [{ tool: 'create_upload', note: '', notShared: 'OTHER_OK', neverReal: 'NOT_FOUND', distinguishes: true, write: true, landed: true }],
+      subjectControlOk: true,
+      authControlSameAsReal: false,
+      classifierControlOk: true,
+    });
+    assert.equal(v.status, 'INCONCLUSIVE');
+    assert.deepEqual(v.landedWrites, ['create_upload']);
+    assert.match(v.reason, /NO artifact to look for/);
+    assert.match(v.reason, /credential as leaked/);
+  });
+});
+
+describe('ADMIN-GATED — a control answered before it reaches the subject is not a reading', () => {
+  it('holds the three adminOnly tools, and every one of them is a real registered tool', () => {
+    assert.equal(ADMIN_GATED.length, 3);
+    for (const g of ADMIN_GATED) {
+      const t = (TOOLS as unknown as RegisteredTool[]).find((x) => x.name === g.tool);
+      assert.ok(t, `${g.tool} must exist in the registry — a deferral aimed at nothing is not a deferral`);
+    }
+  });
+
+  it('they stay AT-RISK and stay COUNTED — naming the reason shrinks the text, not the gate', () => {
+    // RULE 36: an exclusion that moves a row out of the findings list moves it
+    // out of every gate at the same time. These rows are explained, not disposed.
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], PROBES.map((p) => p.tool));
+    for (const g of ADMIN_GATED) {
+      assert.ok(frame.atRisk.includes(g.tool), `${g.tool} must remain in the AT-RISK denominator`);
+      assert.ok(frame.unprobed.includes(g.tool), `${g.tool} must remain in the unprobed to-do list`);
+    }
+  });
+
+  it('a closed gate is recognised by the refusal, not by the error alone', () => {
+    assert.equal(adminGateStillClosed({ isError: true, text: `error: This action ${ADMIN_REFUSAL}.` }), true);
+    // NEG-CTL: some OTHER error is not the admin gate, and must not be read as
+    // one — that would let an outage keep the deferral alive forever.
+    assert.equal(adminGateStillClosed({ isError: true, text: 'not_found: Task zzz not found' }), false);
+    // And a success means the caller now reaches the handler: deferral stale.
+    assert.equal(adminGateStillClosed({ isError: false, text: '{"ventures":[]}' }), false);
+  });
+
+  it('the control call carries the subject id and NOTHING else — safe in the world where the gate opens', () => {
+    // share_task grants access; provision_agent mints a user and a token. If
+    // assertAdmin ever stops answering, the zod parse must be what refuses
+    // next, so these argument objects are deliberately incomplete.
+    assert.deepEqual(adminGateProbeArgs('office_venture', 'X1'), { entityId: 'X1' });
+    assert.deepEqual(adminGateProbeArgs('share_task', 'X1'), { taskId: 'X1' });
+    assert.deepEqual(adminGateProbeArgs('provision_agent', 'X1'), { shareTaskId: 'X1' });
+    for (const g of ADMIN_GATED) {
+      assert.equal(Object.keys(adminGateProbeArgs(g.tool, 'X1')).length, 1, `${g.tool}: exactly one argument`);
+    }
+  });
+
+  it('none of the three is ALSO in PROBES — the two lists cannot both claim a tool', () => {
+    for (const g of ADMIN_GATED) {
+      assert.ok(!PROBES.some((p) => p.tool === g.tool), `${g.tool} is deferred; it must not also be probed`);
+      assert.ok(!DEFERRED.some((d) => d.tool === g.tool), `${g.tool} is admin-gated, not subject-deferred`);
+    }
   });
 });
