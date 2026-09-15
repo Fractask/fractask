@@ -330,6 +330,44 @@ export const NEVER_PUT_ATTACHMENT_ID = process.env.NEVER_PUT_ATTACHMENT_ID || 'z
 export const PROBE_FINALIZE_FILENAME = 'not-shared-probe-finalize-upload.txt';
 
 /**
+ * The `ask_human` probe's prompt text — and the marker that would make a landed
+ * ask findable, in the one place a landed ask would be.
+ *
+ * A stray PROMPT is the loudest of this table's write failures and the one
+ * whose damage lands furthest from the caller: `createPrompt` bumps the task to
+ * `status="review"` and files the row against the task's OWNER, so an unrefused
+ * call does not leave a quiet artifact in a tree — it puts a card in a human's
+ * "needs your input" queue with this text on it. The enumerator that finds it
+ * (`list_prompts`) is a PROBED row that distinguishes, so unlike the note case
+ * the marker has a reader that works.
+ */
+export const PROBE_ASK_PROMPT = 'NOT-SHARED PROBE — must never be asked (not-shared-behaviour-probe)';
+
+/**
+ * `ask_human`'s SECOND guard, and the reason its reach leg is safe.
+ *
+ * `createPrompt` (`src/prompts.ts:593`) runs four refusals ahead of its insert
+ * at `:632`, in this order: the access assert on `taskId` (`:598`), the agent
+ * packaging check (`:606`), the addressing check (`:616`), and the goal-link
+ * validation (`:623`). The probe's arguments are built to trip TWO of them
+ * independently — no `deck`/`recommendation`/`estSeconds`, **and** a
+ * `goalTaskId` naming a row whose `kind` is not `"goal"`.
+ *
+ * That is what makes a readable subject safe here, on the `finalize_upload`
+ * pattern rather than the `create_task` one: the insert is unreachable even in
+ * a build where the access assert runs LAST, and even in a build where the
+ * packaging rule is switched off at `/settings/rules` — which it can be, since
+ * `isAgentRuleEnabled('prompt_requires_deck')` reads a workspace setting this
+ * caller does not control. One guard would have made the reach leg's safety
+ * depend on a toggle; two make it depend on neither.
+ *
+ * ⚠️ It must name a task that EXISTS and is READABLE and is not a goal. A
+ * never-real id would make the goal leg throw `not_found`, which is one of the
+ * two answers this row is trying to tell apart.
+ */
+export const ASK_NON_GOAL_TASK_ID = process.env.ASK_NON_GOAL_TASK_ID || 'Tx5g85uLq96D';
+
+/**
  * One probed tool: a name plus how it names the subject in its own arguments.
  *
  * `write: true` marks a call that would MUTATE if it were not refused. Those
@@ -571,6 +609,35 @@ export function finalizeVariants(): ProbeVariant[] {
 }
 
 /**
+ * `ask_human`'s variant set. One entry, spelled out for the same reason
+ * `finalizeVariants` is: the reach leg is safe AND load-bearing, and the
+ * degenerate variant would be `reachSafe: false`.
+ *
+ * The name says what is being held fixed — the two guards that make the insert
+ * unreachable — so the row reads as a claim about an argument set rather than
+ * about the tool (precondition 21). Sent with a packaged deck it would be a
+ * different call with a different safety argument, and that call is not made
+ * here.
+ */
+export function askHumanVariants(): ProbeVariant[] {
+  return [
+    {
+      name: 'unpackaged+non-goal',
+      args: (id) => ({
+        taskId: id,
+        kind: 'text',
+        prompt: PROBE_ASK_PROMPT,
+        goalTaskId: ASK_NON_GOAL_TASK_ID,
+      }),
+      reachSafe: true,
+      why:
+        'no deck AND a goalTaskId that is not a goal — two independent pre-insert refusals, so the prompt is ' +
+        'unreachable in EITHER assert order and with the workspace deck rule either on or off',
+    },
+  ];
+}
+
+/**
  * The probed set. Each row is a tool an agent reaches for when it is about to
  * draw a conclusion about whether a task is there.
  */
@@ -761,6 +828,40 @@ export const PROBES: Probe[] = [
     }),
     variants: finalizeVariants,
     note: 'WRITE — the call that actually INSERTS; safe by construction rather than by assert order, so it carries a REACH leg',
+    write: true,
+  },
+  // `ask_human` — the first row taken off the unprobed list that carried NO
+  // annotation at all, i.e. one nobody had yet found a reason to exclude.
+  //
+  // Measured by hand against prod on 2026-09-15 13:41Z before it was encoded
+  // (precondition 18), three subjects, and the answer is the THREE-DISTINCT
+  // shape rather than two:
+  //
+  //   not-shared  TfmR7QJFqluo   NOT_SHARED   "…do not recreate it…"
+  //   never-real  zzzNoSuch9XyZ  NOT_FOUND    "Task zzzNoSuch9XyZ not found"
+  //   readable    Tx5g85uLq96D   OTHER_ERR    "ask_human requires deck + recommendation + estSeconds…"
+  //
+  // So prod's `createPrompt` asserts ACCESS before it checks PACKAGING, and the
+  // readable leg proves the handler was reached without creating anything —
+  // `list_prompts` on that task was byte-identical before and after, and its
+  // `status` did not move to `review`.
+  //
+  // It is worth its own row rather than being assumed from the other writes for
+  // the reason this card keeps re-learning: `ask_human` is the only tool here
+  // whose unrefused call is delivered to a HUMAN rather than left in a tree, so
+  // `report_shipped`'s THIRD-PARTY-ARTIFACT question had to be asked of it too.
+  // The answer differs — a landed prompt IS enumerable and cancellable by this
+  // caller — but that is a measurement, not an inheritance.
+  {
+    tool: 'ask_human',
+    args: (id) => ({
+      taskId: id,
+      kind: 'text',
+      prompt: PROBE_ASK_PROMPT,
+      goalTaskId: ASK_NON_GOAL_TASK_ID,
+    }),
+    variants: askHumanVariants,
+    note: "WRITE — the only row whose unrefused call lands in a HUMAN's review queue; two pre-insert guards make its REACH leg safe",
     write: true,
   },
   { tool: 'list_tasks', args: (id) => ({ parentId: id }), note: 'COLLECTION — [] is the success shape' },
@@ -1700,6 +1801,10 @@ export function decide(args: {
         'list_notes(scopeTaskId=…), which CONFLATES — so check get_note on the id the call returned), ' +
         'and for attachments named ' +
         '"not-shared-probe.txt" before trusting anything else here. ' +
+        `⚠️ ask_human is the one whose damage is already DELIVERED: a prompt reading "${PROBE_ASK_PROMPT}" ` +
+        'has bumped its task to status="review" and is sitting in that task owner\'s queue — find it with ' +
+        'list_prompts(taskId=…) (a row that distinguishes, so the enumerator works) and retract it with ' +
+        'cancel_prompt, then put the task back where it was. ' +
         `⚠️ create_upload is the exception: it leaves NO artifact to look for — a "${PROBE_UPLOAD_FILENAME}" ` +
         'grant is a signed PUT URL into another owner\'s storage prefix, visible to no enumerator ' +
         'and expiring on its own, so if that row is in the list above, treat the credential as leaked',

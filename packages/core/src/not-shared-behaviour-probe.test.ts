@@ -62,6 +62,9 @@ import {
   NEVER_PUT_ATTACHMENT_ID,
   PROBE_FINALIZE_FILENAME,
   finalizeVariants,
+  PROBE_ASK_PROMPT,
+  ASK_NON_GOAL_TASK_ID,
+  askHumanVariants,
   variantLanded,
   type Row,
   type VariantRow,
@@ -407,6 +410,12 @@ describe('the probed set', () => {
     // added without it is watched by nothing.
     const writes = PROBES.filter((p) => p.write).map((p) => p.tool).sort();
     assert.deepEqual(writes, [
+      // Added 2026-09-15 13:4xZ. The pin fired on this addition too — and this
+      // is the row where an unflagged write probe would have cost the most:
+      // every other stray artifact on this table sits in a tree until someone
+      // greps for it, and this one is DELIVERED — it bumps its task to
+      // status="review" and lands in a human's queue.
+      'ask_human',
       'attach_file',
       // Added 2026-09-15 11:5xZ with the `variants` dimension. The pin fired on
       // this addition too — and it matters more here than on any previous row,
@@ -1481,7 +1490,17 @@ describe('finalize_upload — the call that actually INSERTS, and the first writ
         .filter((v) => v.reachSafe)
         .map((v) => `${p.tool}[${v.name}]`),
     );
-    assert.deepEqual(reachSafeWrites, ['attach_file_from_url[url=unfetchable]', 'finalize_upload[object=absent]']);
+    // ➕ `ask_human[unpackaged+non-goal]` joined on 2026-09-15 13:4xZ, and it is
+    // safe for a THIRD reason rather than a repeat of these two: not "the
+    // effect has nothing to point at", but "two independent guards refuse ahead
+    // of the insert, and neither of them is the access assert." One of those
+    // guards is a workspace RULE that a human can switch off at
+    // /settings/rules, which is why the row carries two and not one.
+    assert.deepEqual(reachSafeWrites, [
+      'attach_file_from_url[url=unfetchable]',
+      'finalize_upload[object=absent]',
+      'ask_human[unpackaged+non-goal]',
+    ]);
     // And the complement, which is the half that would rot silently: a write
     // variant that becomes reachSafe without an argument for why fails HERE.
     const unsafeWrites = PROBES.filter((p) => p.write).flatMap((p) =>
@@ -1524,6 +1543,94 @@ describe('finalize_upload — the call that actually INSERTS, and the first writ
   it('the row-level args and the variant args agree — two spellings of one call is one drift away from a lie', () => {
     const p = PROBES.find((x) => x.tool === 'finalize_upload')!;
     assert.deepEqual(finalizeVariants()[0].args(NOT_SHARED_TASK_ID), p.args(NOT_SHARED_TASK_ID));
+  });
+});
+
+describe('ask_human — the only probed row whose unrefused call is DELIVERED to a human', () => {
+  it('is on the table, is flagged as a write, and carries its own named variant', () => {
+    const p = PROBES.find((x) => x.tool === 'ask_human');
+    assert.ok(p, 'the first row taken off the unprobed list that carried no exclusion at all');
+    assert.equal(p.write, true);
+    const vs = variantsOf(p, 'https://example.com/api/mcp');
+    assert.equal(vs.length, 1);
+    // The name states the two guards, not the tool — the verdict is a claim
+    // about THIS argument set. Sent with a packaged deck it is a different
+    // call with a different safety argument, and that call is not made here.
+    assert.equal(vs[0].name, 'unpackaged+non-goal');
+  });
+
+  it('is AT-RISK in the frame, so probing it moves the coverage denominator', () => {
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor([]));
+    assert.ok(frame.atRisk.includes('ask_human'));
+    assert.ok(!frame.unprobed.includes('ask_human'));
+    // …and skipping it puts it straight back on the to-do list, rather than
+    // leaving a tool nobody asked inside the covered count.
+    const skipped = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor(['ask_human']));
+    assert.ok(skipped.unprobed.includes('ask_human'));
+  });
+
+  it('sends NEITHER half of the packaging AND a non-goal goalTaskId — two independent pre-insert refusals', () => {
+    const p = PROBES.find((x) => x.tool === 'ask_human')!;
+    const args = p.args(NOT_SHARED_TASK_ID) as Record<string, unknown>;
+    assert.equal(args.taskId, NOT_SHARED_TASK_ID);
+    // Guard 1 — the agent packaging check. All three fields absent, because
+    // the error names whichever it finds missing and any one of them is enough.
+    assert.equal(args.deck, undefined);
+    assert.equal(args.recommendation, undefined);
+    assert.equal(args.estSeconds, undefined);
+    // Guard 2 — the goal-link validation. This is the one that survives a
+    // workspace with `prompt_requires_deck` switched off, which is why it is
+    // here at all: `isAgentRuleEnabled` reads a setting this caller does not
+    // control, so a single-guard row would have had a safety argument that a
+    // human could turn off from the web UI without ever seeing this file.
+    assert.equal(args.goalTaskId, ASK_NON_GOAL_TASK_ID);
+    // ⚠️ And the goal id must be a REAL, READABLE, non-goal task. A never-real
+    // id there makes the goal leg throw `not_found` — one of the exact two
+    // answers this row exists to tell apart, so the row would report a
+    // conflation it had manufactured itself.
+    assert.notEqual(ASK_NON_GOAL_TASK_ID, NEVER_REAL_TASK_ID);
+    assert.notEqual(ASK_NON_GOAL_TASK_ID, NOT_SHARED_TASK_ID);
+  });
+
+  it('varies the SUBJECT and holds both guards fixed across the legs', () => {
+    const p = PROBES.find((x) => x.tool === 'ask_human')!;
+    const a = p.args(NOT_SHARED_TASK_ID) as Record<string, unknown>;
+    const b = p.args(NEVER_REAL_TASK_ID) as Record<string, unknown>;
+    assert.notEqual(a.taskId, b.taskId);
+    assert.equal(a.goalTaskId, b.goalTaskId);
+    assert.equal(a.prompt, b.prompt);
+  });
+
+  it('carries a marker distinct from every other write probe', () => {
+    // A stray prompt is findable — `list_prompts` distinguishes, unlike the
+    // note case — but only if the text identifies itself. Shared wording with
+    // another probe would make one probe's damage read as another's.
+    const p = PROBES.find((x) => x.tool === 'ask_human')!;
+    assert.equal((p.args(NOT_SHARED_TASK_ID) as Record<string, unknown>).prompt, PROBE_ASK_PROMPT);
+    for (const other of [PROBE_TASK_TITLE, PROBE_COMMENT_BODY, PROBE_NOTE_TITLE]) {
+      assert.notEqual(PROBE_ASK_PROMPT, other);
+    }
+  });
+
+  it("names its retraction path in the WRITE-SAFETY reason — a marker with no undo is half a control", () => {
+    const verdict = decide({
+      rows: [{ tool: 'ask_human', write: true, landed: true } as never],
+      subjectOk: true,
+      authOk: true,
+      classOk: true,
+    } as never);
+    assert.equal(verdict.status, 'INCONCLUSIVE');
+    assert.match(verdict.reason, /ask_human/);
+    assert.match(verdict.reason, /list_prompts/);
+    assert.match(verdict.reason, /cancel_prompt/);
+    // The half a reader would not guess: the task has been MOVED, so undoing
+    // the prompt is not the whole repair.
+    assert.match(verdict.reason, /review/);
+  });
+
+  it('the row-level args and the variant args agree — two spellings of one call is one drift away from a lie', () => {
+    const p = PROBES.find((x) => x.tool === 'ask_human')!;
+    assert.deepEqual(askHumanVariants()[0].args(NOT_SHARED_TASK_ID), p.args(NOT_SHARED_TASK_ID));
   });
 });
 
