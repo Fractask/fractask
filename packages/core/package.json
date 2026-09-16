@@ -26,7 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/smoke.test.ts src/recurrence.test.ts src/recurrence-cron.test.ts src/tasks.test.ts src/mcp-tools.test.ts src/focus.test.ts src/prompt-guards.test.ts src/pass-on.test.ts src/scratchpad.test.ts src/mcp-errors.test.ts src/not-shared-deploy-marker.test.ts src/not-shared-behaviour-probe.test.ts src/attach-from-url-order-probe.test.ts",
+    "test": "tsx --test src/smoke.test.ts src/recurrence.test.ts src/recurrence-cron.test.ts src/tasks.test.ts src/mcp-tools.test.ts src/focus.test.ts src/prompt-guards.test.ts src/pass-on.test.ts src/scratchpad.test.ts src/mcp-errors.test.ts src/not-shared-deploy-marker.test.ts src/not-shared-behaviour-probe.test.ts src/attach-from-url-order-probe.test.ts src/notfound-noun-probe.test.ts",
     "not-shared-marker": "tsx scripts/not-shared-deploy-marker.mts",
     "not-shared-behaviour": "tsx scripts/not-shared-behaviour-probe.mts",
     "not-shared-local": "tsx scripts/not-shared-local-collection-probe.mts",
@@ -39,6 +39,7 @@
     "append-rule": "tsx scripts/append-rule.mts",
     "amend-rule": "tsx scripts/amend-rule.mts",
     "afu-order": "tsx scripts/attach-from-url-order-probe.mts",
+    "notfound-noun": "tsx scripts/notfound-noun-probe.mts",
     "not-shared-note-subject": "tsx scripts/not-shared-note-subject.mts",
     "move-note-hand-probe": "tsx scripts/move-note-hand-probe.mts"
   },
