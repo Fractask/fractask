@@ -49,6 +49,13 @@ import {
   filedTaskIdOf,
   probesToSkip,
   probedNamesFor,
+  deferredProbedNames,
+  deferredArgs,
+  deferredNeverRealArgs,
+  noteParentOf,
+  noteFixtureCleanupEligible,
+  NOTE_FIXTURE_TITLE,
+  NEVER_REAL_NOTE_ID,
   parentIdOf,
   variantsOf,
   variantStatus,
@@ -959,7 +966,10 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
   it('names all three remaining tools, each with a reason and a discharge', () => {
     assert.deepEqual(
       UNPROBEABLE.map((u) => u.tool).sort(),
-      ['delete_note', 'delete_task', 'move_note', 'report_shipped', 'scratchpad_dismiss', 'update_note'],
+      // `move_note` LEFT this list on 2026-09-16 — both its blockers (a
+      // not-shared NOTE subject, a caller-owned note for the id slot) are
+      // derived/minted per run now, and it is a DEFERRED row that CONFLATES.
+      ['delete_note', 'delete_task', 'report_shipped', 'scratchpad_dismiss', 'update_note'],
     );
     for (const u of UNPROBEABLE) {
       assert.ok(u.reason.length > 0, `${u.tool} needs a reason`);
@@ -974,8 +984,12 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
     // for this caller at all.
     const byTool = Object.fromEntries(UNPROBEABLE.map((u) => [u.tool, u.kind]));
     assert.equal(byTool['delete_task'], 'UNSAFE-SUBJECT');
-    assert.equal(byTool['move_note'], 'NOTE-SUBJECT');
+    // `delete_note` is now the only NOTE-SUBJECT row, and it carries BOTH
+    // reasons: the subject is a note AND the act has no undo. That is why it
+    // did not leave with `move_note`, whose subject went in a spare slot.
+    assert.equal(byTool['delete_note'], 'NOTE-SUBJECT');
     assert.ok(!UNPROBEABLE.some((u) => u.tool === 'move_task'), 'move_task is probed, not deferred');
+    assert.ok(!UNPROBEABLE.some((u) => u.tool === 'move_note'), 'move_note is a DEFERRED row now, not unprobeable');
   });
 
   it('update_note is UNSAFE-SUBJECT for a reason about the BLAST RADIUS, not about the assert order', () => {
@@ -1101,9 +1115,166 @@ describe('the destructive four were THREE reasons, not one bucket', () => {
 
 describe('a SKIPPED probe is not a probed tool — the branch an ablation found untested', () => {
   it('counts every intended probe when nothing was skipped', () => {
-    const names = probedNamesFor([]);
+    const names = probedNamesFor([], DEFERRED.map((d) => d.tool));
     assert.ok(names.includes('move_task'));
-    for (const d of DEFERRED) assert.ok(names.includes(d.tool), `${d.tool} is named, and named is what DEFERRED means`);
+    for (const d of DEFERRED) assert.ok(names.includes(d.tool), `${d.tool} was ASKED this run, so it is covered`);
+  });
+
+  it('a DEFERRED tool is NOT covered just by being listed — the second argument decides it', () => {
+    // The old signature added every DEFERRED tool unconditionally, so a row
+    // whose subject failed to resolve was counted as covered while its own
+    // "NOT PROBED" line said the opposite. Two numbers in one headline,
+    // disagreeing in the reassuring direction.
+    const names = probedNamesFor([], []);
+    for (const d of DEFERRED) assert.ok(!names.includes(d.tool), `${d.tool} was never asked, so it is not covered`);
+    const frame = frameCensus(TOOLS as unknown as RegisteredTool[], names);
+    for (const d of DEFERRED) assert.ok(frame.unprobed.includes(d.tool));
+  });
+
+  it('omitting the deferred argument UNDER-reports coverage rather than over-reporting it', () => {
+    // The direction is the guarantee. A forgotten argument has to show up as a
+    // row on the to-do list, which somebody chases — never as a covered row,
+    // which nobody does.
+    for (const d of DEFERRED) assert.ok(!probedNamesFor([]).includes(d.tool));
+  });
+});
+
+describe('deferredProbedNames — asked, not listed', () => {
+  const rows = [
+    { tool: 'get_note', reason: 'r', envVar: 'NOT_SHARED_NOTE_ID' },
+    {
+      tool: 'move_note',
+      reason: 'r',
+      envVar: 'NOT_SHARED_NOTE_ID',
+      needsFixtureNote: true,
+      write: true,
+      args: (s: string, f: string) => ({ id: f, newParentNoteId: s }),
+    },
+  ];
+
+  it('counts a row only when its subject resolved', () => {
+    assert.deepEqual(deferredProbedNames(rows, [], true), []);
+    assert.deepEqual(deferredProbedNames(rows, ['get_note'], true), ['get_note']);
+  });
+
+  it('a fixture-needing row is dropped when the fixture is unusable, and the other row is not', () => {
+    // The two halves fail independently: the subject derivation can succeed on
+    // a run where minting the fixture does not, and vice versa.
+    assert.deepEqual(deferredProbedNames(rows, ['get_note', 'move_note'], false), ['get_note']);
+    assert.deepEqual(deferredProbedNames(rows, ['get_note', 'move_note'], true), ['get_note', 'move_note']);
+  });
+
+  it('a row whose REACH leg failed is not covered — a run that measured nothing is not a finding', () => {
+    assert.deepEqual(deferredProbedNames(rows, ['get_note', 'move_note'], true, ['move_note']), ['get_note']);
+  });
+
+  it('a row can fail all three ways at once without reappearing', () => {
+    assert.deepEqual(deferredProbedNames(rows, [], false, ['move_note', 'get_note']), []);
+  });
+});
+
+describe('move_note — the note surface`s move_task, folded in from the hand probe', () => {
+  const mn = DEFERRED.find((d) => d.tool === 'move_note');
+
+  it('is a DEFERRED row, and a WRITE one', () => {
+    assert.ok(mn, 'move_note must be in DEFERRED');
+    assert.equal(mn!.write, true);
+    assert.equal(mn!.needsFixtureNote, true);
+  });
+
+  it('NEVER puts the not-shared subject in the id slot — that is the delete_task shape', () => {
+    // `id` is where the act LANDS. Putting a row the caller cannot see there
+    // is the design that has no safe version; the subject belongs in the
+    // parent slot, which is what made move_task probeable.
+    const args = deferredArgs(mn!, 'HIDDEN', 'FIXTURE') as { id: string; newParentNoteId: string };
+    assert.equal(args.id, 'FIXTURE');
+    assert.equal(args.newParentNoteId, 'HIDDEN');
+  });
+
+  it('varies the SUBJECT between the two legs and holds the fixture fixed', () => {
+    // If the never-real leg moved the fixture too, the two legs would differ
+    // in two ways and neither answer would be about the subject.
+    const a = deferredArgs(mn!, 'HIDDEN', 'FIXTURE') as Record<string, unknown>;
+    const b = deferredNeverRealArgs(mn!, 'FIXTURE') as Record<string, unknown>;
+    assert.equal(a.id, b.id);
+    assert.notEqual(a.newParentNoteId, b.newParentNoteId);
+    assert.equal(b.newParentNoteId, NEVER_REAL_NOTE_ID);
+  });
+
+  it('its REACH leg is a no-op move to root — safe, and it must SUCCEED', () => {
+    const r = mn!.reachArgs!('FIXTURE') as { id: string; newParentNoteId: null };
+    assert.equal(r.id, 'FIXTURE');
+    assert.equal(r.newParentNoteId, null);
+  });
+
+  it('get_note keeps the plain single-id shape — the default is not disturbed', () => {
+    const gn = DEFERRED.find((d) => d.tool === 'get_note')!;
+    assert.deepEqual(deferredArgs(gn, 'HIDDEN', 'FIXTURE'), { id: 'HIDDEN' });
+    assert.deepEqual(deferredNeverRealArgs(gn, 'FIXTURE'), { id: NEVER_REAL_NOTE_ID });
+    assert.equal(gn.write, undefined);
+    assert.equal(gn.needsFixtureNote, undefined);
+  });
+
+  it('update_note and delete_note did NOT come free with it', () => {
+    // Same "caller-owned note in the id slot" shape, opposite blast radius:
+    // update_note's subject slot IS scopeTaskId, which takes the note off the
+    // owner leg and orphans it from its own repair call; delete_note has
+    // neither a spare slot nor an undo.
+    for (const t of ['update_note', 'delete_note']) {
+      assert.ok(!DEFERRED.some((d) => d.tool === t), `${t} must not be probed on move_note's argument`);
+      assert.ok(!PROBES.some((p) => p.tool === t));
+    }
+  });
+
+  it('the fixture title is distinct from the must-never-exist marker', () => {
+    // One marks a note that must NEVER be created; the other marks one that
+    // SHOULD exist after every run. A grep that cannot tell them apart reports
+    // the safe fixture as damage.
+    assert.notEqual(NOTE_FIXTURE_TITLE, PROBE_NOTE_TITLE);
+    assert.ok(!NOTE_FIXTURE_TITLE.includes('must never be created'));
+  });
+});
+
+describe('noteParentOf — three values, because unreadable is not the same as at-root', () => {
+  it('reads a parent back', async () => {
+    assert.equal(await noteParentOf({ isError: false, text: '{"id":"n","parentNoteId":"P"}' }), 'P');
+  });
+
+  it('a note at root is null — the un-landed state', async () => {
+    assert.equal(await noteParentOf({ isError: false, text: '{"id":"n","parentNoteId":null}' }), null);
+    assert.equal(await noteParentOf({ isError: false, text: '{"id":"n"}' }), null);
+  });
+
+  it('an error, unparseable text, or a null body is UNKNOWN and never null', async () => {
+    // Folding these into `null` turns a blind safety gauge into a green one:
+    // "0 landed" would then be printed by a control that read nothing.
+    assert.equal(await noteParentOf({ isError: true, text: 'not_shared: …' }), 'unknown');
+    assert.equal(await noteParentOf({ isError: false, text: 'not json' }), 'unknown');
+    assert.equal(await noteParentOf({ isError: false, text: 'null' }), 'unknown');
+  });
+});
+
+describe('the per-run note fixture is removed, but never when it is evidence', () => {
+  it('an un-landed fixture is deleted — it is minted hourly, so leaving it is a slow leak', () => {
+    assert.equal(noteFixtureCleanupEligible(null, null), true);
+  });
+
+  it('a fixture a probe leg MOVED is kept — deleting it would erase the finding', () => {
+    // delete_note takes descendants with it, and the row a WRITE-SAFETY control
+    // just flagged is the one artifact a human needs to look at.
+    assert.equal(noteFixtureCleanupEligible('SOME_PARENT', null), false);
+    assert.equal(noteFixtureCleanupEligible('SOME_PARENT', false), false);
+  });
+
+  it('a moved-then-repaired fixture IS deletable — it is back in the certified state', () => {
+    assert.equal(noteFixtureCleanupEligible('SOME_PARENT', true), true);
+  });
+
+  it('an UNREADABLE fixture is never deleted — the gauge that would justify it is blind', () => {
+    // This is the case where the cleanup and the safety control disagree about
+    // what they know. The control abstains, so the delete abstains too.
+    assert.equal(noteFixtureCleanupEligible('unknown', null), false);
+    assert.equal(noteFixtureCleanupEligible('unknown', true), false);
   });
 
   it('puts a skipped tool back on the to-do list instead of counting it as covered', () => {

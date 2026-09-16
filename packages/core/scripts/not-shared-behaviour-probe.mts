@@ -134,6 +134,19 @@ export const NEVER_REAL_TASK_ID = process.env.NEVER_REAL_TASK_ID || 'zzzNoSuch9X
 export const NEVER_REAL_NOTE_ID = process.env.NEVER_REAL_NOTE_ID || 'zzzNoNote9XyZ';
 
 /**
+ * The caller-owned note a deferred WRITE row puts in its non-subject slot.
+ *
+ * Minted per run and never pasted, for the reason a remembered subject rots in
+ * two directions that neither announce: the note is deleted (the probe then
+ * moves nothing and reports a control that passed) or it acquires a scope
+ * (the probe then writes to a row it is not reasoning about). Deliberately a
+ * DIFFERENT string from `PROBE_NOTE_TITLE`, which marks a note that must never
+ * exist: this one is a note that SHOULD exist on every run, and a grep that
+ * cannot tell them apart would report the safe fixture as damage.
+ */
+export const NOTE_FIXTURE_TITLE = 'not_shared probe fixture — deferred write id slot (safe to delete)';
+
+/**
  * ## The move fixture — a subject this caller OWNS, so a destructive tool can be probed at all
  *
  * `move_task` is one of the four destructive at-risk tools the 2026-09-15 02:4xZ
@@ -896,13 +909,130 @@ export const PROBES: Probe[] = [
  * a note that exists and is not shared with the runner and the row is probed
  * like any other.
  */
-export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
+export type DeferredRow = {
+  tool: string;
+  reason: string;
+  envVar: string;
+  /**
+   * How the call is built from the resolved note subject and, for a row that
+   * needs one, this caller's own fixture note.
+   *
+   * Defaulted to `{ id: subject }` so `get_note` reads exactly as it always
+   * did. It is a function rather than a constant because the second note row —
+   * `move_note` — must NOT put the subject in the `id` slot: that is the
+   * `delete_task` shape, where the act lands on the row the caller cannot see.
+   */
+  args?: (subjectId: string, fixtureNoteId: string) => Record<string, unknown>;
+  /** The never-real leg, same shape. Defaulted to `{ id: NEVER_REAL_NOTE_ID }`. */
+  neverRealArgs?: (fixtureNoteId: string) => Record<string, unknown>;
+  /**
+   * This row needs a note THIS CALLER OWNS in its non-subject slot. The fixture
+   * is minted per run, never pasted, and the row is SKIPPED (not degraded) if
+   * minting or reading it back fails — a fixture minted badly is
+   * indistinguishable from a finding.
+   */
+  needsFixtureNote?: boolean;
+  /**
+   * A write: its ANSWER and its EFFECT are two different things, which is this
+   * whole file's subject. A write row carries a state leg — the fixture's
+   * `parentNoteId` read back with `get_note` after every call.
+   */
+  write?: boolean;
+  /**
+   * A leg that must SUCCEED. Without it a refusal on the subject leg is
+   * unreadable: it could be the access assert, or it could be that this caller
+   * cannot call the tool at all.
+   */
+  reachArgs?: (fixtureNoteId: string) => Record<string, unknown>;
+};
+
+export const DEFERRED: DeferredRow[] = [
   {
     tool: 'get_note',
     reason: 'needs a NOT-SHARED *note* subject; a task id is not a note id, and a share-scoped caller cannot find one',
     envVar: 'NOT_SHARED_NOTE_ID',
   },
+  // `move_note(id=<fixture note>, newParentNoteId=<subject>)` — the note
+  // surface's `move_task`, and the row the 2026-09-16 01:4xZ hand probe
+  // measured before it was encoded here (precondition 18):
+  //
+  // ```
+  //   POS   fixture → root               OTHER_OK    move_note IS callable by this caller
+  //   SUBJ  newParentNoteId = hidden     NOT_FOUND   "not_found: Task o339ulRmWRDH not found"
+  //   NEG   newParentNoteId = never-real NOT_FOUND   ⛔ IDENTICAL  → 🔴 CONFLATES
+  //   AUTH  garbage bearer               OTHER_ERR   distinguishable from a bad credential
+  //   WRITE-SAFETY  4 legs · 0 landed
+  // ```
+  //
+  // It is a row here, and not left as `npm run move-note-hand-probe`, for the
+  // reason the 00:3xZ receipt on this card earned: a reading that lives only in
+  // a command nobody runs is not in the headline, and this card's headline is
+  // its whole product. The hand probe stays — it carries the repair and is the
+  // cheaper thing to edit — but the COVERAGE frame can only see a row.
+  //
+  // **Why this write is safe, argued from the visibility predicate and not from
+  // the shape.** `moveBrainNote` (`brain.ts:353`) writes exactly
+  // `{ parentNoteId, position, updatedAt }` and never touches `scopeTaskId`;
+  // `noteVisibility` (`access.ts:343`) keys on `scope_task_id`, never on
+  // `parent_note_id`. So a fixture minted with NO scope stays on the
+  // `user_id = caller` leg under any parent: an unrefused write leaves it
+  // readable, enumerable and repairable with `move_note(id, null)`.
+  //
+  // `update_note` has the IDENTICAL shape and is still correctly unprobed —
+  // its subject slot IS `scopeTaskId`, so the same write takes the note off the
+  // owner leg and orphans it from every enumerator and from its own repair
+  // call. Same shape, opposite blast radius. `delete_note` has neither a spare
+  // slot nor an undo. Neither comes free with this row.
+  {
+    tool: 'move_note',
+    reason:
+      'needs a NOT-SHARED *note* subject for newParentNoteId AND a caller-owned note for the id slot; the fixture is minted per run',
+    envVar: 'NOT_SHARED_NOTE_ID',
+    args: (subjectId, fixtureNoteId) => ({ id: fixtureNoteId, newParentNoteId: subjectId }),
+    neverRealArgs: (fixtureNoteId) => ({ id: fixtureNoteId, newParentNoteId: NEVER_REAL_NOTE_ID }),
+    needsFixtureNote: true,
+    write: true,
+    reachArgs: (fixtureNoteId) => ({ id: fixtureNoteId, newParentNoteId: null }),
+  },
 ];
+
+/** The call a deferred row makes on its not-shared subject. */
+export function deferredArgs(d: DeferredRow, subjectId: string, fixtureNoteId: string): Record<string, unknown> {
+  return d.args ? d.args(subjectId, fixtureNoteId) : { id: subjectId };
+}
+
+/** The call a deferred row makes on the never-real subject — the NEG leg. */
+export function deferredNeverRealArgs(d: DeferredRow, fixtureNoteId: string): Record<string, unknown> {
+  return d.neverRealArgs ? d.neverRealArgs(fixtureNoteId) : { id: NEVER_REAL_NOTE_ID };
+}
+
+/**
+ * Which deferred rows this run may count as probed.
+ *
+ * A row is probed only if its SUBJECT resolved and — when it needs one — its
+ * FIXTURE is usable. Both halves matter and they fail independently: the
+ * subject derivation can succeed against a workspace whose note the endpoint
+ * then refuses to mint a fixture in, and a fixture can mint fine on a run where
+ * no hidden note exists at all.
+ *
+ * This is RULE 30 on the deferral loop itself. Before this the frame added
+ * every `DEFERRED` tool to the probed set unconditionally — so a `get_note`
+ * whose subject failed to resolve was counted as covered while its own
+ * `NOT PROBED` line said the opposite, and the two numbers in the headline
+ * disagreed with each other in the reassuring direction.
+ */
+export function deferredProbedNames(
+  rows: DeferredRow[],
+  resolvedTools: string[],
+  fixtureOk: boolean,
+  reachFailed: string[] = [],
+): string[] {
+  const resolved = new Set(resolvedTools);
+  const noReach = new Set(reachFailed);
+  return rows
+    .filter((d) => resolved.has(d.tool) && (!d.needsFixtureNote || fixtureOk) && !noReach.has(d.tool))
+    .map((d) => d.tool);
+}
 
 export type DeferralOutcome = {
   tool: string;
@@ -1128,14 +1258,13 @@ export const UNPROBEABLE: {
       'shape, so NOT_SHARED_NOTE_ID alone does not discharge it',
     discharge: 'NOT_SHARED_NOTE_ID plus a safe design; a delete aimed at the subject has neither slot nor undo',
   },
-  {
-    tool: 'move_note',
-    kind: 'NOTE-SUBJECT',
-    reason:
-      'id and newParentNoteId are both NOTE ids, so it needs the subject get_note is deferred on — not a destructiveness ' +
-      'problem: with a not-shared note it discharges exactly the way move_task just did',
-    discharge: 'NOT_SHARED_NOTE_ID plus a caller-owned note for the id slot',
-  },
+  // ✅ `move_note` LEFT this list on 2026-09-16 02:4xZ. Its two blockers were
+  // the not-shared NOTE subject (derived in-process since 00:3xZ) and a
+  // caller-owned note for the `id` slot (minted per run by the deferral loop).
+  // It is a `DEFERRED` row now and it CONFLATES. Its sibling `delete_note`
+  // did NOT come with it — same note subject, but no spare slot and no undo —
+  // and neither did `update_note`, whose subject slot is `scopeTaskId`.
+  //
   // `update_note` — the row the 2026-09-15 04:3xZ receipt named as "the cheapest
   // next row", on an argument that was right about the assert order and never
   // asked what the write would LEAVE BEHIND. See UPDATE_NOTE_BLAST_RADIUS.
@@ -1275,6 +1404,60 @@ export function parentIdOf(a: { isError: boolean; text: string }): string | null
   } catch {
     return null;
   }
+}
+
+/**
+ * The note fixture's `parentNoteId`, as three values rather than two.
+ *
+ * `'unknown'` is NOT folded into `null`, and that is the whole point: `null`
+ * means *"I read it and it is at root"* — the un-landed state — while
+ * `'unknown'` means *"I could not read it"*. Collapsing them turns a blind
+ * safety gauge into a green one, which is the failure this control exists to
+ * prevent.
+ *
+ * ⚠️ It reads with `get_note`, which this card reports as CONFLATING. That is
+ * sound here and only here: `get_note` conflates on subjects the caller cannot
+ * read, and the fixture is the caller's OWN note — the case it answers
+ * correctly. The POS-CTL at mint time is what turns that from an argument into
+ * a measurement.
+ */
+export async function noteParentOf(a: { isError: boolean; text: string }): Promise<string | null | 'unknown'> {
+  if (a.isError) return 'unknown';
+  try {
+    const body = JSON.parse(a.text) as { parentNoteId?: string | null } | null;
+    if (!body || typeof body !== 'object') return 'unknown';
+    return body.parentNoteId ?? null;
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * May the per-run note fixture be deleted at the end of the run?
+ *
+ * Only in the un-landed state. The fixture is minted every hour, so leaving it
+ * behind is a slow leak into a human's brain that no control in this file would
+ * ever report — every other gauge here asks whether a WRITE landed, not whether
+ * the probe tidied up after itself.
+ *
+ * But a fixture that a probe leg actually MOVED is evidence, and `delete_note`
+ * takes descendants with it. So a landed write keeps the row: a cleanup that
+ * removes the artifact a safety control just flagged is not cleanup, it is the
+ * finding being deleted. `repaired === true` is deletable — the move was undone
+ * and re-read, so the row is back in the state the control certifies.
+ */
+export function noteFixtureCleanupEligible(
+  parentAfter: string | null | 'unknown',
+  repaired: boolean | null,
+): boolean {
+  if (parentAfter === 'unknown') return false;
+  if (parentAfter === null) return true;
+  return repaired === true;
+}
+
+/** `noteParentOf` over a live call — the WRITE-SAFETY read of the note fixture. */
+async function readNoteParent(url: string, auth: string, id: string): Promise<string | null | 'unknown'> {
+  return noteParentOf(await callTool(url, auth, 'get_note', { id }));
 }
 
 /**
@@ -1541,9 +1724,15 @@ export const FRAME_NO_ID_NEG_CTL = 'search_users';
  * subject was unusable was never asked, and a tool that was never asked belongs
  * on the to-do list, not in the covered count.
  */
-export function probedNamesFor(skipped: string[]): string[] {
+export function probedNamesFor(skipped: string[], deferredProbed?: string[]): string[] {
   const skip = new Set(skipped);
-  return [...PROBES.map((p) => p.tool).filter((t) => !skip.has(t)), ...DEFERRED.map((d) => d.tool)];
+  // ⚠️ The default is NOT "every deferred row counts as probed" — that was the
+  // old behaviour and it was wrong in the reassuring direction. It is "no
+  // deferred row counts", so a caller that forgets to pass the second argument
+  // UNDER-reports coverage instead of over-reporting it. A missing argument
+  // then shows up as a row on the to-do list, which is the direction somebody
+  // chases.
+  return [...PROBES.map((p) => p.tool).filter((t) => !skip.has(t)), ...(deferredProbed ?? [])];
 }
 
 /**
@@ -1732,6 +1921,14 @@ export type Row = {
    * not refused, so it may have landed. Only meaningful with `write`.
    */
   landed?: boolean;
+  /**
+   * A deferred row's REACH leg — a call that must SUCCEED, proving this caller
+   * can call the tool at all. Without it, `NOT_FOUND / NOT_FOUND` on the two
+   * subjects and *"this credential cannot call this tool"* are the same output.
+   */
+  reach?: string | null;
+  /** The reach leg succeeded. `undefined` on a row that declares no reach leg. */
+  reachOk?: boolean;
 };
 
 export type Verdict = {
@@ -2142,6 +2339,27 @@ async function main(): Promise<number> {
   // How each DEFERRED row got (or failed to get) its subject this run. Printed
   // either way: a subject the reader cannot audit is not better than no subject.
   const deferralOutcomes: DeferralOutcome[] = [];
+  // NOTE-FIXTURE control state — the caller-owned note a deferred write row
+  // puts in its non-subject slot. All of it printed every run.
+  let noteFixtureId: string | null = null;
+  let noteFixtureParentBefore: string | null | 'unknown' = 'unknown';
+  let noteFixtureParentAfter: string | null | 'unknown' = 'unknown';
+  let noteFixtureOk = false;
+  let noteFixtureRepaired: boolean | null = null;
+  let noteFixtureDeleted: boolean | null = null;
+  // Deferred rows that HAD a subject and were still not probed, because their
+  // fixture precondition failed. Named, so they land on the to-do list rather
+  // than vanishing between the two buckets.
+  const deferredFixtureSkipped: string[] = [];
+  // Deferred write legs that came back WITHOUT an error — not refused, so they
+  // may have landed. The `landedByVariant` of the deferral loop.
+  const deferredLegsUnrefused: string[] = [];
+  // Deferred rows whose REACH leg did not succeed: not probed, and NOT printed
+  // as a finding. Named so the row returns to the to-do list.
+  const deferredReachFailed: string[] = [];
+  // Deferred tools this run actually asked. The frame's probed set is built
+  // from THIS, never from `DEFERRED` itself.
+  const deferredProbedTools: string[] = [];
 
   if (subjectControlOk) {
     const readable = await callTool(url, auth, 'list_notes', { scopeTaskId: READABLE_SCOPE_TASK_ID });
@@ -2271,20 +2489,111 @@ async function main(): Promise<number> {
     // again, because the discharge lived in an env var nobody passes. A remedy
     // behind a flag is not deployed; and here the flag's absence moved the
     // headline in the REASSURING direction, which is the half nobody chases.
+    //
+    // The fixture note is minted ONCE per run and only when a row needs one, so
+    // a run with no such row makes no write at all. It carries personal scope
+    // on purpose — see the `move_note` row for why that, and not the argument
+    // shape, is what bounds the blast radius.
+    const needsFixture = DEFERRED.some((d) => d.needsFixtureNote);
+    if (needsFixture) {
+      const minted = await callTool(url, auth, 'create_note', {
+        title: NOTE_FIXTURE_TITLE,
+        contentText: 'Fixture for the move_note access probe. Personal scope on purpose — see DEFERRED in not-shared-behaviour-probe.mts.',
+      });
+      if (!minted.isError) {
+        try {
+          noteFixtureId = (JSON.parse(minted.text) as { id: string }).id;
+        } catch {
+          noteFixtureId = null;
+        }
+      }
+      // POS-CTL on the safety gauge itself: if the fixture cannot be read back,
+      // every "0 landed" below would be a reading of a blind instrument.
+      noteFixtureParentBefore = noteFixtureId ? await readNoteParent(url, auth, noteFixtureId) : 'unknown';
+      noteFixtureOk = noteFixtureId !== null && noteFixtureParentBefore !== 'unknown';
+    }
+
     for (const d of DEFERRED) {
       const outcome = await resolveDeferredSubject(d, process.env, deriveNotSharedNoteSubject);
       deferralOutcomes.push(outcome);
       if (!outcome.resolved || !outcome.subjectId) continue;
+      // A row whose fixture precondition failed is NOT probed and NOT degraded
+      // — same rule as `probesToSkip`. Degrading it to "subject in the id slot"
+      // would be the `delete_task` shape aimed at a row nobody can see.
+      if (d.needsFixtureNote && !noteFixtureOk) {
+        deferredFixtureSkipped.push(d.tool);
+        continue;
+      }
+      const fixture = noteFixtureId ?? '';
 
-      const notShared = await callTool(url, auth, d.tool, { id: outcome.subjectId });
-      const neverReal = await callTool(url, auth, d.tool, { id: NEVER_REAL_NOTE_ID });
+      // REACH leg first, and only when the row declares one: a refusal below is
+      // unreadable without it.
+      let reach: string | null = null;
+      if (d.reachArgs) {
+        const r = await callTool(url, auth, d.tool, d.reachArgs(fixture));
+        reach = r.klass;
+        if (d.write && !r.isError) deferredLegsUnrefused.push(`${d.tool}[reach]`);
+        // A failed REACH leg does not produce a WORSE row, it produces NO row.
+        // `NOT_FOUND / NOT_FOUND` under a credential that cannot call the tool
+        // at all is not a CONFLATES finding — it is a run that measured
+        // nothing, and printing it as a finding is precondition 12's defect.
+        if (reach !== 'OTHER_OK') {
+          deferredReachFailed.push(d.tool);
+          continue;
+        }
+      }
+
+      const notShared = await callTool(url, auth, d.tool, deferredArgs(d, outcome.subjectId, fixture));
+      if (d.write && !notShared.isError) deferredLegsUnrefused.push(`${d.tool}[not-shared]`);
+      const neverReal = await callTool(url, auth, d.tool, deferredNeverRealArgs(d, fixture));
+      if (d.write && !neverReal.isError) deferredLegsUnrefused.push(`${d.tool}[never-real]`);
+
+      deferredProbedTools.push(d.tool);
       rows.push({
         tool: d.tool,
-        note: `subject ${outcome.from}`,
+        note:
+          `subject ${outcome.from}` +
+          (d.reachArgs ? ` · REACH ${reach}` : '') +
+          (d.needsFixtureNote ? ` · fixture ${fixture} minted this run` : ''),
         notShared: notShared.klass,
         neverReal: neverReal.klass,
+        // A row with a REACH leg is only readable when that leg SUCCEEDED.
+        // Otherwise "both refused the same way" and "this caller cannot call
+        // the tool at all" are the same output, which is precondition 12.
         distinguishes: notShared.klass !== neverReal.klass,
+        reach,
+        reachOk: d.reachArgs ? reach === 'OTHER_OK' : undefined,
+        write: d.write,
       });
+    }
+
+    // STATE leg for the note fixture — read AFTER every deferred call, because
+    // for a move the answer and the world can disagree, and this file exists
+    // because those are two different objects. Repaired unconditionally.
+    if (noteFixtureId) {
+      noteFixtureParentAfter = await readNoteParent(url, auth, noteFixtureId);
+      if (noteFixtureParentAfter !== null && noteFixtureParentAfter !== 'unknown') {
+        const fix = await callTool(url, auth, 'move_note', { id: noteFixtureId, newParentNoteId: null });
+        noteFixtureRepaired = !fix.isError && (await readNoteParent(url, auth, noteFixtureId)) === null;
+      }
+      // CLEAN UP, and only in the un-landed state.
+      //
+      // This script runs hourly. A fixture left behind is one junk note per
+      // run in a human's brain — a slow leak that no gauge here would ever
+      // report, because every control in this file asks whether a write
+      // LANDED, not whether the probe's own bookkeeping did. `move_task`'s and
+      // `scratchpad_file`'s fixtures are long-lived rows that are reused; this
+      // one is minted per run, so it is the first fixture that has to be
+      // removed rather than restored.
+      //
+      // ⚠️ The guard is `parent === null`, i.e. the state where nothing landed.
+      // If a write DID land, the fixture is evidence and is kept: deleting the
+      // artifact a safety control just flagged would erase the finding, and
+      // `delete_note` takes descendants with it.
+      if (noteFixtureCleanupEligible(noteFixtureParentAfter, noteFixtureRepaired)) {
+        const del = await callTool(url, auth, 'delete_note', { id: noteFixtureId });
+        noteFixtureDeleted = !del.isError && (await readNoteParent(url, auth, noteFixtureId)) === 'unknown';
+      }
     }
 
     // STATE leg, last: where is the fixture NOW? Read even when the move row
@@ -2332,7 +2641,21 @@ async function main(): Promise<number> {
   // A probe that was SKIPPED for want of a usable subject is not a probe: it is
   // excluded here so the row returns to the to-do list rather than counting as
   // covered on the strength of being listed.
-  const frame = frameCensus(TOOLS as unknown as RegisteredTool[], probedNamesFor(skippedProbes));
+  // A deferred row counts as covered only if this run ASKED it — subject
+  // resolved AND, where it needs one, a usable fixture. Derived from what
+  // happened, never from the `DEFERRED` list itself.
+  const frame = frameCensus(
+    TOOLS as unknown as RegisteredTool[],
+    probedNamesFor(
+      skippedProbes,
+      deferredProbedNames(
+        DEFERRED,
+        deferralOutcomes.filter((o) => o.resolved).map((o) => o.tool),
+        noteFixtureOk,
+        deferredReachFailed,
+      ),
+    ),
+  );
 
   const verdict = decide({
     rows,
@@ -2352,8 +2675,14 @@ async function main(): Promise<number> {
   // being the same question the moment the probe could derive its own subject.
   // When the subject control voided the run nothing was attempted at all, so
   // every deferred row is unresolved rather than silently "covered".
+  // A row whose FIXTURE failed is still-deferred too, and for a different
+  // reason than a missing subject — it is named separately below rather than
+  // folded in, because the two have different remedies.
   const deferred = DEFERRED.filter(
-    (d) => !deferralOutcomes.some((o) => o.tool === d.tool && o.resolved),
+    (d) =>
+      !deferralOutcomes.some((o) => o.tool === d.tool && o.resolved) ||
+      deferredFixtureSkipped.includes(d.tool) ||
+      deferredReachFailed.includes(d.tool),
   );
 
   if (asJson) {
@@ -2443,6 +2772,51 @@ async function main(): Promise<number> {
               ? `   ✅ unchanged; REACH leg ${scratchReachOk ? 'reached the handler' : 'did NOT'}`
               : '   ⚪ unusable — scratchpad_file NOT probed this run, and is back on the to-do list'),
     );
+  }
+  {
+    // The NOTE fixture's STATE leg — the deferral loop's WRITE-SAFETY control,
+    // same shape and same reason as MOVE CTL. Printed every run including the
+    // runs where no deferred row needed a fixture, so the reader can tell "no
+    // write was attempted" from "a write was attempted and did not land".
+    const needed = DEFERRED.some((d) => d.needsFixtureNote);
+    const moved = noteFixtureParentAfter !== null && noteFixtureParentAfter !== 'unknown';
+    console.log(
+      `  NOTE  CTL   fixture ${noteFixtureId ?? '(not minted)'} parent ${String(noteFixtureParentBefore)} → ` +
+        `${String(noteFixtureParentAfter)}` +
+        (!needed
+          ? '   — no deferred row needs one, so none was minted'
+          : !subjectControlOk
+            ? '   — not run (subject control failed first)'
+            : moved
+              ? `   ⛔ RE-PARENTED — a deferred write probe landed; repair ${noteFixtureRepaired ? 'took ✅' : 'FAILED ⛔ — move it to root by hand'}`
+              : noteFixtureOk
+                ? '   ✅ at root after every leg'
+                : '   ⚪ unusable — the deferred write row(s) NOT probed this run, and back on the to-do list'),
+    );
+    if (needed) {
+      console.log(
+        `  NOTE  CLEAN ${noteFixtureDeleted === null ? '⚪ fixture KEPT' : noteFixtureDeleted ? '✅ fixture deleted and re-read as gone' : '🔴 delete FAILED — remove it by hand'}` +
+          (noteFixtureDeleted === null
+            ? ' — a leg landed (or the fixture was unreadable), so the row is evidence and stays'
+            : ' — this fixture is minted per run, so it is removed rather than reused'),
+      );
+    }
+    console.log(
+      `  NOTE  WRITE ${deferredLegsUnrefused.length} deferred write leg(s) came back WITHOUT an error` +
+        (deferredLegsUnrefused.length === 0
+          ? '   ✅ every leg was refused'
+          : `   — ${deferredLegsUnrefused.join(', ')} (a REACH leg is EXPECTED here; a subject leg is not)`),
+    );
+    if (deferredReachFailed.length) {
+      console.log(
+        `  NOTE  REACH ${deferredReachFailed.join(', ')} — the must-succeed leg did NOT succeed; NOT probed, and no verdict printed for it`,
+      );
+    }
+    if (deferredFixtureSkipped.length) {
+      console.log(
+        `  NOTE  SKIP  ${deferredFixtureSkipped.join(', ')} — subject resolved but the fixture did not; NOT probed, NOT degraded`,
+      );
+    }
   }
   {
     // Printed at zero and at full, every run. This control's job is to notice
