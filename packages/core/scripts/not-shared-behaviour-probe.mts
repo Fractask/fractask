@@ -1344,6 +1344,86 @@ export const UNPROBEABLE: {
  * A limit that cannot notice its own precondition lapsing is a limit that
  * silently becomes a lie.
  */
+/**
+ * Split the NEVER-PROBED bucket by whether THIS CALLER could discharge it.
+ *
+ * ## Why the flat count was wrong about its own rows
+ *
+ * The headline has read `N of 28 AT-RISK tool(s) were never asked` for three
+ * days, and the section under it is titled *"full list, no cap: this is a
+ * to-do list"*. Measured against the rows it actually holds on 2026-09-16,
+ * **not one of the 8 is unexamined.** Every single one carries a named kind, a
+ * measured reason and an explicit discharge condition — three of them from
+ * dedicated probes in this same directory (`npm run report-shipped-blast-radius`,
+ * `note-scope-blast-radius`, `scratch-subject-reachability`). And 3 of the 8
+ * are `adminOnly`: this caller cannot probe them at all, today or after any
+ * amount of work, because `assertAdmin()` answers before the subject assert.
+ *
+ * So the number fuses three states that call for three different actions:
+ *
+ *   OPEN         nobody has looked, or the reason expired. GO RUN IT.
+ *   BLOCKED      examined, and waiting on a named precondition somebody must
+ *                supply (a subject id, an ownership root, a reader on the MCP
+ *                surface). Real work, and not work this run can do.
+ *   UNREACHABLE  admin-gated with the gate measured CLOSED this run. Not this
+ *                caller's to-do in any world.
+ *
+ * ⚠️ **An expired reason must escape.** An admin-gated tool whose gate is
+ * measured OPEN this run is `OPEN`, not `UNREACHABLE` — the deferral was a
+ * claim about a permission and permissions change. That is the whole reason
+ * the gate is re-read every run instead of being trusted from the constant.
+ *
+ * ## Why this is a partition and not a filter
+ *
+ * `f.unprobed.length` does not move: the same 8 rows are counted, in the same
+ * bucket, printed in the same list with the same inline reasons. Only the
+ * headline learns to say WHICH KIND of 8 they are. A bucket that shrank when a
+ * row was explained would be this repo's own RULE 36 defect — an exclusion
+ * that quietly removes a row from every gate — and the inline-reason design
+ * above exists precisely to avoid it.
+ *
+ * What changes is what a reader concludes. `8 never asked · this is a to-do
+ * list` reads as eight neglected jobs and has read that way to every human who
+ * has seen this card's receipts. `0 unexamined · 5 blocked on a named
+ * precondition · 3 not probeable by this caller` is the same 8 rows and a
+ * different instruction.
+ */
+export function partitionUnprobed(
+  unprobed: string[],
+  ctx: {
+    adminGated: { tool: string }[];
+    adminReadings: { tool: string; closed: boolean }[];
+    unprobeable: { tool: string }[];
+    skipped: string[];
+  },
+): { open: string[]; blocked: string[]; unreachable: string[] } {
+  const open: string[] = [];
+  const blocked: string[] = [];
+  const unreachable: string[] = [];
+  for (const t of unprobed) {
+    const gated = ctx.adminGated.some((g) => g.tool === t);
+    const reading = ctx.adminReadings.find((r) => r.tool === t);
+    if (gated) {
+      // No reading at all is NOT "still gated" — it is an unmeasured gate, and
+      // an unmeasured gate must not be filed as permanently out of reach. That
+      // is the same shape as counting an unprobed row as covered, one bucket
+      // over.
+      if (reading?.closed) unreachable.push(t);
+      else open.push(t);
+      continue;
+    }
+    // A row SKIPPED this run has no reading behind it, whatever a constant
+    // says about it — it is unexamined this run and belongs in OPEN.
+    if (ctx.skipped.includes(t)) {
+      open.push(t);
+      continue;
+    }
+    if (ctx.unprobeable.some((u) => u.tool === t)) blocked.push(t);
+    else open.push(t);
+  }
+  return { open, blocked, unreachable };
+}
+
 export const ADMIN_GATED: { tool: string; reason: string }[] = [
   { tool: 'office_venture', reason: 'adminOnly — assertAdmin() answers before the subject assert' },
   { tool: 'share_task', reason: 'adminOnly — assertAdmin() answers before the subject assert' },
@@ -2028,6 +2108,20 @@ export function decide(args: {
    * genuinely cannot state coverage.
    */
   frame?: Frame;
+  /**
+   * Optional and defaulted to absent so existing callers are unchanged: the
+   * split of `frame.unprobed` by whether THIS CALLER could discharge it, from
+   * {@link partitionUnprobed}. Supply it and the coverage clause says which
+   * KIND of never-asked it is reporting; omit it and the clause is exactly the
+   * flat count it has always been.
+   *
+   * Passed in rather than computed here because the admin-gate readings are a
+   * measurement this run takes against the live build, and `decide` is pure.
+   * A gate read from the constant instead of from the run would file an
+   * expired deferral as permanent, which is the one direction this split must
+   * not fail in.
+   */
+  unprobedPartition?: { open: string[]; blocked: string[]; unreachable: string[] };
 }): Verdict {
   // A row CONFLATES when some variant answered the two refused subjects
   // identically AND that variant is known to have reached the handler. For a
@@ -2144,9 +2238,23 @@ export function decide(args: {
   // The coverage clause, appended to the headline rather than replacing it: a
   // conflating tool is a defect and an unprobed tool is a gap, and fusing the
   // two into one number would make each unreadable.
+  //
+  // ⚠️ And the flat count misdescribed its own rows. On 2026-09-16 all 8 of
+  // them carried a measured reason and a named discharge condition, 3 of them
+  // admin-gated and unreachable by this caller in any world — while the clause
+  // read `8 … never asked` and the section under it said "this is a to-do
+  // list". Same 8 rows, same bucket, same inline reasons; the clause now says
+  // which KIND, because "0 unexamined · 5 blocked · 3 unreachable" and "8
+  // neglected jobs" are different instructions to the reader.
+  const p = args.unprobedPartition;
   const coverage = args.frame
     ? `, and ${unprobed.length} of ${args.frame.atRisk.length} AT-RISK tool(s) were never asked` +
-      (unprobed.length ? ` (${unprobed.join(', ')})` : '')
+      (unprobed.length
+        ? p
+          ? ` (${p.open.length} UNEXAMINED${p.open.length ? `: ${p.open.join(', ')}` : ''} · ` +
+            `${p.blocked.length} blocked on a named precondition · ${p.unreachable.length} not probeable by this caller)`
+          : ` (${unprobed.join(', ')})`
+        : '')
     : '';
 
   // Ordered AHEAD of CONFLATES, for the same reason WRITE-SAFETY is ordered
@@ -2667,6 +2775,19 @@ async function main(): Promise<number> {
       moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore,
     scratchFixtureMoved: scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore,
     frame,
+    // Built from THIS RUN's admin-gate readings, not from ADMIN_GATED alone —
+    // a gate that has opened since the constant was written must surface as
+    // UNEXAMINED (go probe it), never as "not probeable by this caller".
+    ...(frame
+      ? {
+          unprobedPartition: partitionUnprobed(frame.unprobed, {
+            adminGated: ADMIN_GATED,
+            adminReadings: adminGateReadings,
+            unprobeable: UNPROBEABLE,
+            skipped: skippedProbes,
+          }),
+        }
+      : {}),
   });
   const code = exitCodeFor(verdict);
 
@@ -2902,9 +3023,19 @@ async function main(): Promise<number> {
       `  ${String(f.atRisk.length).padStart(4)}  AT-RISK — take an id naming a SHAREABLE row (${SHAREABLE_REFERENTS.join('/')})`,
     );
     console.log(`  ${String(f.probed.length).padStart(4)}  probed by this script (incl. DEFERRED, which is named below)`);
+    const part = partitionUnprobed(f.unprobed, {
+      adminGated: ADMIN_GATED,
+      adminReadings: adminGateReadings,
+      unprobeable: UNPROBEABLE,
+      skipped: skippedProbes,
+    });
     console.log(
       `  ${String(f.unprobed.length).padStart(4)}  ${f.unprobed.length ? '🔴' : '✅'} AT-RISK but NEVER PROBED` +
-        (f.unprobed.length ? '  — full list, no cap: this is a to-do list' : '  — the frame is covered'),
+        (f.unprobed.length
+          ? `  — full list, no cap. ${part.open.length} UNEXAMINED · ${part.blocked.length} blocked on a named precondition · ` +
+            `${part.unreachable.length} not probeable by this caller` +
+            (part.open.length ? '  ← the to-do list is the UNEXAMINED column' : '  ← nothing here is a run-it-now row')
+          : '  — the frame is covered'),
     );
     for (const t of f.unprobed) {
       const row = f.rows.find((r) => r.tool === t)!;

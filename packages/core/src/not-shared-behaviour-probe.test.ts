@@ -40,6 +40,7 @@ import {
   adminGateProbeArgs,
   PROBE_UPLOAD_FILENAME,
   UNPROBEABLE,
+  partitionUnprobed,
   MOVE_FIXTURE_TASK_ID,
   MOVE_FIXTURE_PARENT_ID,
   moveFixtureUsable,
@@ -1974,5 +1975,158 @@ describe('decideCaller — the identity the probe actually authenticates as', ()
     const r = decideCaller(undefined, null, 'the bearer token resolves to no user');
     assert.equal(r.id, null);
     assert.match(r.mismatch!, /resolves to no user/);
+  });
+});
+
+describe('partitionUnprobed — a flat "never asked" count misdescribes its own rows', () => {
+  // The bucket's real contents on 2026-09-16: 5 with a measured UNPROBEABLE
+  // reason, 3 admin-gated with the gate read CLOSED this run, 0 unexamined —
+  // reported for three days as "8 never asked · this is a to-do list".
+  const CTX = {
+    adminGated: [{ tool: 'share_task' }, { tool: 'provision_agent' }, { tool: 'office_venture' }],
+    adminReadings: [
+      { tool: 'share_task', closed: true },
+      { tool: 'provision_agent', closed: true },
+      { tool: 'office_venture', closed: true },
+    ],
+    unprobeable: [
+      { tool: 'delete_task' },
+      { tool: 'update_note' },
+      { tool: 'delete_note' },
+      { tool: 'scratchpad_dismiss' },
+      { tool: 'report_shipped' },
+    ],
+    skipped: [] as string[],
+  };
+  const EIGHT = [
+    'delete_task',
+    'update_note',
+    'delete_note',
+    'scratchpad_dismiss',
+    'report_shipped',
+    'share_task',
+    'provision_agent',
+    'office_venture',
+  ];
+
+  it('the real bucket has ZERO unexamined rows — the to-do reading was wrong', () => {
+    const p = partitionUnprobed(EIGHT, CTX);
+    assert.deepEqual(p.open, []);
+    assert.equal(p.blocked.length, 5);
+    assert.equal(p.unreachable.length, 3);
+  });
+
+  it('is a PARTITION — every row lands in exactly one column and none is dropped', () => {
+    const p = partitionUnprobed(EIGHT, CTX);
+    assert.equal(p.open.length + p.blocked.length + p.unreachable.length, EIGHT.length);
+    assert.deepEqual([...p.open, ...p.blocked, ...p.unreachable].sort(), [...EIGHT].sort());
+  });
+
+  it('a tool with no reason at all is UNEXAMINED — the default is the to-do column', () => {
+    const p = partitionUnprobed([...EIGHT, 'brand_new_tool'], CTX);
+    assert.deepEqual(p.open, ['brand_new_tool']);
+  });
+
+  it('an admin gate measured OPEN escapes to UNEXAMINED — an expired deferral is not permanent', () => {
+    const p = partitionUnprobed(EIGHT, {
+      ...CTX,
+      adminReadings: CTX.adminReadings.map((r) =>
+        r.tool === 'share_task' ? { ...r, closed: false } : r,
+      ),
+    });
+    assert.ok(p.open.includes('share_task'), 'an opened gate must read as PROBE IT');
+    assert.ok(!p.unreachable.includes('share_task'));
+    assert.equal(p.unreachable.length, 2);
+  });
+
+  it('an admin-gated tool with NO reading is UNEXAMINED, never UNREACHABLE', () => {
+    // An unmeasured gate filed as permanently out of reach is the same defect
+    // as counting an unprobed row as covered, one bucket over.
+    const p = partitionUnprobed(EIGHT, { ...CTX, adminReadings: [] });
+    assert.equal(p.unreachable.length, 0);
+    assert.equal(p.open.length, 3);
+  });
+
+  it('a row SKIPPED this run is UNEXAMINED even when a constant explains it', () => {
+    const p = partitionUnprobed(EIGHT, { ...CTX, skipped: ['report_shipped'] });
+    assert.ok(p.open.includes('report_shipped'), 'no reading behind it this run');
+    assert.equal(p.blocked.length, 4);
+  });
+
+  it('admin-gating wins over an UNPROBEABLE entry — the gate answers first', () => {
+    const p = partitionUnprobed(['share_task'], {
+      ...CTX,
+      unprobeable: [...CTX.unprobeable, { tool: 'share_task' }],
+    });
+    assert.deepEqual(p.unreachable, ['share_task']);
+    assert.deepEqual(p.blocked, []);
+  });
+
+  it('an empty bucket partitions to three empty columns, not to a throw', () => {
+    assert.deepEqual(partitionUnprobed([], CTX), { open: [], blocked: [], unreachable: [] });
+  });
+});
+
+describe("decide — the coverage clause says WHICH KIND of never-asked", () => {
+  const ROWS = [
+    { tool: 'get_task', distinguishes: true, write: false, landed: false, varies: false },
+  ] as unknown as Row[];
+  // Built with its controls PASSING, so the coverage clause is reached at all.
+  // A frame whose controls failed is not a denominator and decide() says so
+  // before it ever gets to coverage — which is how the first draft of these
+  // four cases passed a fixture that read as a frame and was not one.
+  const FRAME = {
+    total: 39,
+    atRisk: new Array(28).fill('x'),
+    probed: [],
+    unprobed: ['a', 'b'],
+    rows: [],
+    noIdArg: [],
+    unclassifiedArgs: [],
+    controls: {
+      probedAreAtRisk: { ok: true, probed: 0, atRisk: 28 },
+      userIdNegCtl: { ok: true },
+      noIdNegCtl: { ok: true },
+      population: { ok: true, total: 39 },
+    },
+  } as unknown as Parameters<typeof decide>[0]['frame'];
+  const base = {
+    rows: ROWS,
+    subjectControlOk: true,
+    authControlSameAsReal: false,
+    classifierControlOk: true,
+    frame: FRAME,
+  };
+
+  it('without a partition the clause is exactly the flat count it has always been', () => {
+    assert.match(decide(base).reason ?? '', /2 of 28 AT-RISK tool\(s\) were never asked \(a, b\)/);
+  });
+
+  it('with a partition it names the UNEXAMINED column, which is the actionable one', () => {
+    const r = decide({
+      ...base,
+      unprobedPartition: { open: [], blocked: ['a'], unreachable: ['b'] },
+    }).reason ?? '';
+    assert.match(r, /0 UNEXAMINED/);
+    assert.match(r, /1 blocked on a named precondition/);
+    assert.match(r, /1 not probeable by this caller/);
+  });
+
+  it('the unexamined tools are NAMED, so a real to-do is never just a number', () => {
+    const r = decide({
+      ...base,
+      unprobedPartition: { open: ['a'], blocked: [], unreachable: ['b'] },
+    }).reason ?? '';
+    assert.match(r, /1 UNEXAMINED: a/);
+  });
+
+  it('the partition never changes the COUNT — same 8 rows, same bucket', () => {
+    const flat = decide(base);
+    const split = decide({
+      ...base,
+      unprobedPartition: { open: [], blocked: ['a'], unreachable: ['b'] },
+    });
+    assert.deepEqual(flat.unprobed, split.unprobed);
+    assert.equal(flat.status, split.status);
   });
 });
