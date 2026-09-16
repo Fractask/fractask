@@ -14,6 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { decideCaller } from '../scripts/not-shared-note-subject.mts';
 import {
   classify,
   countRows,
@@ -26,6 +27,7 @@ import {
   NOT_SHARED_TASK_ID,
   NEVER_REAL_TASK_ID,
   frameCensus,
+  resolveDeferredSubject,
   frameControlsOk,
   referentOf,
   isIdShaped,
@@ -1700,5 +1702,106 @@ describe('variantLanded — the WRITE-SAFETY rule, extracted so a test can reach
 
   it('a refused reach leg does not fire it — the control is keyed on success, not on presence', () => {
     assert.equal(variantLanded({ notShared: refused, neverReal: refused, readable: refused }), false);
+  });
+});
+
+/**
+ * ## The deferred subject — 2026-09-16
+ *
+ * `get_note`'s deferral was discharged by hand on 2026-09-15 23:4xZ and came
+ * back CONFLATES. The very next DEFAULT run printed `3 of 18 conflate` again,
+ * because the discharge lived in `NOT_SHARED_NOTE_ID` and nothing set it.
+ *
+ * Two properties are pinned here, and the second is the one that bites:
+ *   1. with no env var the probe DERIVES its own subject, so the discharge is
+ *      not a remedy behind a flag;
+ *   2. a derivation that fails leaves the row UNRESOLVED — it must not fall
+ *      through to "covered". The reassuring direction is the default direction
+ *      for this row, which is exactly why it needs a test rather than a rule.
+ */
+describe('resolveDeferredSubject — a discharge that is not behind a flag', () => {
+  const D = { tool: 'get_note', envVar: 'NOT_SHARED_NOTE_ID' };
+  const derived = async () => ({
+    status: 'DERIVED' as const,
+    noteId: 'nOtE1',
+    callerId: 'u1',
+    scope: 'sCoPe1',
+    lines: ['  POS-CTL     28 note(s) VISIBLE   ✅'],
+  });
+
+  it('derives a subject when the env var is unset — the default path probes the row', async () => {
+    const o = await resolveDeferredSubject(D, {}, derived);
+    assert.equal(o.resolved, true);
+    assert.equal(o.subjectId, 'nOtE1');
+    assert.match(o.from, /DERIVED in-process/);
+  });
+
+  it('carries the derivation\'s own controls, so the subject is auditable and not merely asserted', async () => {
+    const o = await resolveDeferredSubject(D, {}, derived);
+    assert.deepEqual(o.lines, ['  POS-CTL     28 note(s) VISIBLE   ✅']);
+  });
+
+  it('an env var still PINS the subject, and does not silently lose to the derivation', async () => {
+    let called = false;
+    const o = await resolveDeferredSubject(D, { NOT_SHARED_NOTE_ID: 'pinned9' }, async () => {
+      called = true;
+      return derived();
+    });
+    assert.equal(o.subjectId, 'pinned9');
+    assert.match(o.from, /env/);
+    assert.equal(called, false, 'a pinned subject must not be silently replaced by a derived one');
+  });
+
+  it('🔑 a derivation that finds NOTHING leaves the row unresolved — not quietly covered', async () => {
+    const o = await resolveDeferredSubject(D, {}, async () => ({ status: 'NONE' as const, lines: [] }));
+    assert.equal(o.resolved, false);
+    assert.equal(o.subjectId, undefined);
+    assert.match(o.detail, /no hidden note exists/);
+  });
+
+  it('🔑 an INCONCLUSIVE derivation is unresolved too, and says why — it is not the same fact as NONE', async () => {
+    const o = await resolveDeferredSubject(D, {}, async () => ({
+      status: 'INCONCLUSIVE' as const,
+      reason: 'no workspace DB',
+      lines: [],
+    }));
+    assert.equal(o.resolved, false);
+    assert.match(o.detail, /INCONCLUSIVE — no workspace DB/);
+  });
+
+  it('every DEFERRED row names an env var, so nothing here can become underivable in silence', () => {
+    for (const d of DEFERRED) assert.ok(d.envVar.length > 0, `${d.tool} has no envVar`);
+  });
+});
+
+/**
+ * The caller cross-check. A hand-typed id that names a DIFFERENT user than the
+ * bearer token does would make the whole derivation a true statement about
+ * someone else's hidden note, printed under the prober's name.
+ */
+describe('decideCaller — the identity the probe actually authenticates as', () => {
+  it('resolves from the token when nothing is typed — the flag is not required', () => {
+    assert.deepEqual(decideCaller(undefined, 'uTok', ''), { id: 'uTok', from: 'token' });
+  });
+
+  it('🔑 REFUSES when the typed id and the token disagree — it does not prefer either', () => {
+    const r = decideCaller('uEnv', 'uTok', '');
+    assert.equal(r.id, null);
+    assert.match(r.mismatch!, /uEnv/);
+    assert.match(r.mismatch!, /uTok/);
+  });
+
+  it('agreement is reported as agreement, not as a bare token read', () => {
+    assert.equal(decideCaller('uSame', 'uSame', '').from, 'env+token (agree)');
+  });
+
+  it('falls back to the typed id when the token cannot be resolved at all', () => {
+    assert.deepEqual(decideCaller('uEnv', null, 'boom'), { id: 'uEnv', from: 'env' });
+  });
+
+  it('with neither, it yields no identity AND carries the token error — a blank reason sends the reader nowhere', () => {
+    const r = decideCaller(undefined, null, 'the bearer token resolves to no user');
+    assert.equal(r.id, null);
+    assert.match(r.mismatch!, /resolves to no user/);
   });
 });

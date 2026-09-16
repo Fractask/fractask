@@ -109,6 +109,10 @@
  *   NOT_SHARED_TASK_ID=... NEVER_REAL_TASK_ID=... npm run not-shared-behaviour
  */
 import { readEndpoint, AUTH_NEG_CTL_TOKEN } from './not-shared-deploy-marker.mts';
+// The DEFERRED subject, derived in-process rather than pasted between commands.
+// See the note at the deferred loop: this discharge spent a day behind an env
+// var, and its absence moved the headline toward the reassuring answer.
+import { deriveNotSharedNoteSubject } from './not-shared-note-subject.mts';
 // The registry, for the FRAME census. Imported rather than hand-listed for the
 // same reason the deploy marker imports it: a typed-in population is a number
 // with no clock, and this one has to go red the hour a new tool is registered.
@@ -899,6 +903,74 @@ export const DEFERRED: { tool: string; reason: string; envVar: string }[] = [
     envVar: 'NOT_SHARED_NOTE_ID',
   },
 ];
+
+export type DeferralOutcome = {
+  tool: string;
+  envVar: string;
+  resolved: boolean;
+  subjectId?: string;
+  from: string;
+  detail: string;
+  lines: string[];
+};
+
+/**
+ * Where a deferred row's subject comes from — the decision, separated from the
+ * probing so it can be pinned without a DB or an endpoint.
+ *
+ * The env var no longer DEFINES the deferral; it only PINS a subject. From
+ * 2026-09-16 the probe derives its own, which is the difference between a
+ * discharge that shipped and a discharge sitting behind a flag nobody passes.
+ * The 00:4xZ run is the evidence that the distinction is not theoretical: with
+ * the flag unset the headline read `3 of 18 conflate` — one row better than the
+ * truth measured five hours earlier.
+ */
+export async function resolveDeferredSubject(
+  d: { tool: string; envVar: string },
+  env: Record<string, string | undefined>,
+  derive: () => Promise<
+    | { status: 'DERIVED'; noteId: string; callerId: string; scope: string | null; lines: string[] }
+    | { status: 'NONE'; lines: string[] }
+    | { status: 'INCONCLUSIVE'; reason: string; lines: string[] }
+  >,
+): Promise<DeferralOutcome> {
+  const pinned = env[d.envVar];
+  if (pinned) {
+    return {
+      tool: d.tool,
+      envVar: d.envVar,
+      resolved: true,
+      subjectId: pinned,
+      from: `${d.envVar} (env)`,
+      detail: `subject pinned by ${d.envVar}`,
+      lines: [],
+    };
+  }
+
+  const derived = await derive();
+  if (derived.status === 'DERIVED') {
+    return {
+      tool: d.tool,
+      envVar: d.envVar,
+      resolved: true,
+      subjectId: derived.noteId,
+      from: 'DERIVED in-process this run',
+      detail: `note ${derived.noteId} · scope ${derived.scope ?? 'NULL'} · caller ${derived.callerId}`,
+      lines: derived.lines,
+    };
+  }
+  return {
+    tool: d.tool,
+    envVar: d.envVar,
+    resolved: false,
+    from: `${d.envVar} (env)`,
+    detail:
+      derived.status === 'NONE'
+        ? 'no hidden note exists for this caller — a real reading, not a missing flag'
+        : `derivation INCONCLUSIVE — ${derived.reason}`,
+    lines: derived.lines,
+  };
+}
 
 /**
  * ## The other three of "the destructive four" — and they are THREE DIFFERENT REASONS
@@ -2067,6 +2139,9 @@ async function main(): Promise<number> {
   // Every `tool[variant]` whose write probe came back WITHOUT an error.
   const landedByVariant: string[] = [];
   const skippedProbes: string[] = [];
+  // How each DEFERRED row got (or failed to get) its subject this run. Printed
+  // either way: a subject the reader cannot audit is not better than no subject.
+  const deferralOutcomes: DeferralOutcome[] = [];
 
   if (subjectControlOk) {
     const readable = await callTool(url, auth, 'list_notes', { scopeTaskId: READABLE_SCOPE_TASK_ID });
@@ -2187,15 +2262,25 @@ async function main(): Promise<number> {
       adminGateReadings.push({ tool: g.tool, closed: adminGateStillClosed(a), klass: a.klass });
     }
 
-    // Deferred rows, probed only once their own subject is supplied.
+    // Deferred rows. The subject is DERIVED here when the env var is unset —
+    // it is no longer something a human has to paste in from another command.
+    //
+    // ⚠️ This is the defect the row itself kept demonstrating. `get_note` was
+    // discharged by hand on 2026-09-15 23:4xZ and came back CONFLATES, and the
+    // very next default run — 2026-09-16 00:4xZ — printed `3 of 18 conflate`
+    // again, because the discharge lived in an env var nobody passes. A remedy
+    // behind a flag is not deployed; and here the flag's absence moved the
+    // headline in the REASSURING direction, which is the half nobody chases.
     for (const d of DEFERRED) {
-      const subjectId = process.env[d.envVar];
-      if (!subjectId) continue;
-      const notShared = await callTool(url, auth, d.tool, { id: subjectId });
+      const outcome = await resolveDeferredSubject(d, process.env, deriveNotSharedNoteSubject);
+      deferralOutcomes.push(outcome);
+      if (!outcome.resolved || !outcome.subjectId) continue;
+
+      const notShared = await callTool(url, auth, d.tool, { id: outcome.subjectId });
       const neverReal = await callTool(url, auth, d.tool, { id: NEVER_REAL_NOTE_ID });
       rows.push({
         tool: d.tool,
-        note: `subject from ${d.envVar}`,
+        note: `subject ${outcome.from}`,
         notShared: notShared.klass,
         neverReal: neverReal.klass,
         distinguishes: notShared.klass !== neverReal.klass,
@@ -2262,7 +2347,14 @@ async function main(): Promise<number> {
   });
   const code = exitCodeFor(verdict);
 
-  const deferred = DEFERRED.filter((d) => !process.env[d.envVar]);
+  // A deferred row counts as still-deferred when THIS RUN failed to get a
+  // subject for it — not when an env var happens to be unset. The two stopped
+  // being the same question the moment the probe could derive its own subject.
+  // When the subject control voided the run nothing was attempted at all, so
+  // every deferred row is unresolved rather than silently "covered".
+  const deferred = DEFERRED.filter(
+    (d) => !deferralOutcomes.some((o) => o.tool === d.tool && o.resolved),
+  );
 
   if (asJson) {
     console.log(
@@ -2500,11 +2592,22 @@ async function main(): Promise<number> {
   }
   // Printed, never dropped: a row removed from the findings list silently
   // reads as a row that passed.
+  // How every deferred row got its subject THIS RUN — printed whether it
+  // resolved or not, and with the derivation's own controls at their values.
+  // A subject nobody can audit is a subject nobody should believe.
+  if (deferralOutcomes.length) {
+    console.log('  DEFERRED SUBJECTS — where each one came from this run:');
+    for (const o of deferralOutcomes) {
+      console.log(`  ${o.tool.padEnd(18)} ${o.resolved ? '✅' : '🔴'} ${o.from} — ${o.detail}`);
+      for (const l of o.lines) console.log(`    ${l}`);
+    }
+    console.log('');
+  }
   if (deferred.length) {
     console.log(`  NOT PROBED — ${deferred.length} tool(s), each with the subject it is waiting for:`);
     for (const d of deferred) {
       console.log(`  ${d.tool.padEnd(18)} ${d.reason}`);
-      console.log(`  ${''.padEnd(18)} discharge by setting ${d.envVar}=<id>`);
+      console.log(`  ${''.padEnd(18)} the run's own derivation did not yield one; ${d.envVar}=<id> pins it by hand`);
     }
     console.log('');
   }
