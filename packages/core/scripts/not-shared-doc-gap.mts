@@ -32,9 +32,23 @@
  * ⛔ WHAT THIS FILE DOES NOT MEASURE, stated because the number below is easy
  * to over-read: it reads whether the DESCRIPTION mentions `not_shared`. It does
  * NOT read whether the ANSWER's message carries the do-not-recreate WORDING —
- * that is a third object again, it needs the message text off each live call,
- * and it is the sharper question. Named here as the next row rather than
- * folded into this one.
+ * that is a third object again, and it needs the message text off each live
+ * call.
+ *
+ * ⚠️ 2026-09-18 12:4xZ — THAT SENTENCE USED TO END *"Named here as the next row
+ * rather than folded into this one."* It is no longer a next row: the message
+ * axis SHIPPED in the sibling instrument as the `GUIDANCE` column (`f6db4a2`,
+ * 07:52Z) and reaches an exit code as `SILENT_GUIDANCE` (`a9dde95`, 11:5xZ).
+ * So run `npm run not-shared-behaviour` for that axis — it is measured, it is
+ * gated, and this header was advertising it as unbuilt for 4.9 h.
+ *
+ * 🔑 The reason this is a control (`DG-XREF-FRESH`) and not just a correction:
+ * this section is the guard against over-reading the number below. A guard that
+ * describes a sibling file as it stood five hours ago is exactly the defect the
+ * marker's `2 of 32` target was — a correct sentence with no clock, outliving
+ * the commit that falsified it. So the claim is now DERIVED from the sibling's
+ * source on every run rather than re-typed here, and it voids the run (exit 2)
+ * rather than printing red into a gate that cannot see it.
  *
  * ⚠️ 2026-09-18 09:4xZ — THE TRIPWIRE THIS HEADER USED TO DESCRIBE IS GONE, and
  * the header outlived it by an hour. It read: *"`tasks.test.ts` pins the doc
@@ -214,6 +228,104 @@ ctl('DG-NEGCTL-FREE', hits.length === 0,
   hits.length === 0
     ? `no tool on the gap list is pinned as undocumented in any of the ${testFiles.length} src/*.test.ts file(s) — writing the gap prose kills no control (read off the files, not inferred)`
     : `documenting ${hits.join(', ')} would kill a NEG-CTL — retire it THERE first`)
+
+/* DG-XREF-FRESH — this file's ⛔ DOES-NOT-MEASURE section makes a claim about a
+ * SIBLING file, and nothing re-derived it. Found 2026-09-18 12:4xZ: the section
+ * called the message axis a "next row" for 4.9 h after that axis shipped and was
+ * gated next door. The repair is not the reworded sentence — it is that the
+ * claim is now read off the sibling's SOURCE on every run.
+ *
+ * Keyed on the axis being GATED, not merely present: a printed column that no
+ * exit code reads is the state `a9dde95` repaired, and "the sharper question is
+ * still open" would have been a fair description of it.
+ *
+ * Two spellings, for the reason DG-NEGCTL-FREE carries two: the deferral can be
+ * re-introduced in words other than the ones just retired. */
+const PROBE_FILE = 'not-shared-behaviour-probe.mts'
+let probeSrc = ''
+try { probeSrc = readFileSync(join(HERE, PROBE_FILE), 'utf8') } catch { probeSrc = '' }
+const SELF_SRC = readFileSync(join(HERE, 'not-shared-doc-gap.mts'), 'utf8')
+const selfHeaderRaw = SELF_SRC.slice(0, SELF_SRC.indexOf('*/') + 2)
+/* 🔑 A phrase matcher over a header CANNOT SEE ITS OWN RETRACTION. Measured
+ * 12:5xZ: the reworded section above quotes the retired sentence verbatim — as
+ * the record of what changed — and the first version of this control scored that
+ * quotation as a live deferral and went red at its own fix.
+ *
+ * Deleting the quotation would have made the control green by deleting the
+ * record, which is what "consolidating" is called here. So the RETRACTIONS are
+ * excluded instead, and an exclusion is only honest if it prints what it
+ * declined and is shown to be non-vacuous — DG-XREF-QUOTE-CTL below does both.
+ * A `*"…"*` span in this header is a quotation of superseded text, by the
+ * convention every dated ⚠️ note in this file already follows. */
+const QUOTED = /\*"[\s\S]*?"\*/g
+/* ⚠️ FLATTEN BEFORE MATCHING. This header is a block comment, so any sentence
+ * longer than one line carries `\n * ` inside it — "next row\n * rather than
+ * folded" is not the string "next row rather than folded". Measured 13:1xZ: the
+ * first version's POS-CTL fired on a one-line LITERAL and passed, while the same
+ * regex could never match the real header. A control that does not share the
+ * caller's input shape reports on the fixture. */
+const flatten = (s: string) => s.replace(/\n\s*\*\s?/g, ' ').replace(/\s+/g, ' ')
+const quotedSpans = (selfHeaderRaw.match(QUOTED) ?? []).map(flatten)
+const selfHeader = flatten(selfHeaderRaw.replace(QUOTED, ' '))
+const selfHeaderFlatRaw = flatten(selfHeaderRaw)
+/* The sibling's axis is GATED iff its exit-code path reads the status. */
+const guidanceGatedRe = /verdict\.status === 'SILENT_GUIDANCE'/
+const messageAxisGated = guidanceGatedRe.test(probeSrc)
+const deferralRes = [
+  /next row rather than folded/i,
+  /(sharper question|message axis|do-not-recreate WORDING)[\s\S]{0,240}?(is the next row|named here as the next row|not yet built|remains unbuilt)/i,
+]
+/* POS-CTL over a LITERAL — the retired sentence itself. A matcher that cannot
+ * fire on the exact text it was written to catch is not a matcher, and this
+ * proves it without needing the defect to be present in the file. */
+/* Comment-SHAPED on purpose — `\n * ` inside the sentence, exactly as it sat in
+ * this header — and put through the same `flatten` the live corpus goes through.
+ * The flat one-line version of this fixture passed while the regex was dead
+ * against the real file; a POS-CTL is only a control over the shape the caller
+ * actually hands it. */
+const RETIRED_SENTENCE = flatten('and it is the sharper question. Named here as the next row\n * rather than folded into this one.')
+ctl('DG-XREF-MATCHER', deferralRes.some((re) => re.test(RETIRED_SENTENCE)),
+  'POS-CTL — the deferral matcher fires on the verbatim sentence retired at 12:4xZ, so a zero below reads as "the header does not defer" rather than as a dead regex')
+ctl('DG-XREF-PROBE-READ', guidanceGatedRe.test(probeSrc) || /GUIDANCE_NEEDLE/.test(probeSrc),
+  probeSrc
+    ? `POS-CTL — ${PROBE_FILE} was read (${probeSrc.length} ch) and carries the GUIDANCE axis, so "gated" below is a reading of that file`
+    : `${PROBE_FILE} could not be read from ${HERE} — the cross-reference cannot be derived, so it must not be reported either way`)
+/* The exclusion's own control. Both legs, because either one alone passes for
+ * the wrong reason: if no span was stripped the filter is vacuous (it would have
+ * scored the same with no code at all), and if the raw header does not carry the
+ * retired sentence there was nothing to exclude, so "it is gone from the
+ * stripped copy" is true of an empty difference. */
+const nMatches = (s: string) => deferralRes.filter((re) => re.test(s)).length
+const quotedCarryingDeferral = quotedSpans.filter((q) => deferralRes.some((re) => re.test(q)))
+const quoteCtlNonVacuous = quotedCarryingDeferral.length > 0
+/* ⚠️ Counted, not `.some()`. The 12:5xZ ablation injected a LIVE deferral beside
+ * the quoted one and this leg went red saying *"the raw header carries no
+ * deferral either"* — false, it carried two. A boolean "matches before, does not
+ * match after" cannot survive a second, unquoted match, so it reported the
+ * stripper as broken in exactly the run that was testing something else. Two
+ * controls moving on one injection is a confounded ablation, and the message
+ * named the wrong cause. Counts distinguish "the stripper removed a reading"
+ * from "no reading survived". */
+/* ⚠️ And the count is measured PER SPAN, not over the whole header. The 13:2xZ
+ * ablation injected a live deferral and this leg went red at `2 raw → 2
+ * stripped`: `nMatches` counts how many of the two REGEXES match, so a single
+ * live deferral saturates it and the stripper's work becomes invisible. Two
+ * controls moved on one injection again — the same confound, one level in.
+ * The stripper's claim is about the SPANS, so that is what is tested: every
+ * quoted deferral must be absent from the stripped text, regardless of what
+ * else the header says. */
+const quoteCtlBites = quotedCarryingDeferral.every((q) => !selfHeader.includes(q))
+ctl('DG-XREF-QUOTE-CTL', quoteCtlNonVacuous && quoteCtlBites,
+  quoteCtlNonVacuous && quoteCtlBites
+    ? `${quotedSpans.length} quoted span(s) declined, ${quotedCarryingDeferral.length} of them carrying a deferral, and all ${quotedCarryingDeferral.length} are absent from the stripped text (whole-header reading, for context only: ${nMatches(selfHeaderFlatRaw)} raw → ${nMatches(selfHeader)} stripped). Declined: ${quotedSpans.map((q) => JSON.stringify(q.slice(0, 60))).join(' · ')}`
+    : !quoteCtlNonVacuous
+      ? `no *"…"* span in this header carries a deferral (${quotedSpans.length} span(s) found), so the retraction filter has nothing to exclude — it cannot be shown to do anything and must not be credited with the verdict below`
+      : `the filter found ${quotedCarryingDeferral.length} quoted deferral(s) and at least one SURVIVED into the stripped text — the stripper is not removing what it claims to remove`)
+const headerDefers = deferralRes.some((re) => re.test(selfHeader))
+ctl('DG-XREF-FRESH', !(messageAxisGated && headerDefers),
+  messageAxisGated && headerDefers
+    ? `this header still defers the MESSAGE axis to a "next row" while ${PROBE_FILE} already gates it (SILENT_GUIDANCE reaches the exit code) — the guard against over-reading the number below is describing a sibling file as it no longer is`
+    : `the ⛔ DOES-NOT-MEASURE section agrees with ${PROBE_FILE} as it stands (axis gated there: ${messageAxisGated ? 'yes' : 'no'} · header defers here: ${headerDefers ? 'yes' : 'no'}) — read off the sibling's source, not re-typed`)
 say('')
 
 const ctlFail = controls.filter((c) => !c.ok)
