@@ -52,10 +52,36 @@
  *  - **MATCHER.** A string no description contains must count 0, or the
  *    matcher's zeroes mean nothing.
  *
+ * ## ⚠️ 2026-09-18 09:4xZ — the headline number RISES WHEN YOU DO THE WORK
+ *
+ * `missing` is `local.documented \ prod.documented`. Prod is frozen between
+ * deploys, so that set is monotonically increasing in how much THIS TREE
+ * documents. Measured this run: 4 today, and `not-shared-doc-gap` names 13
+ * more tools that answer `not_shared` and never say it — writing those 13
+ * sentences, a correct and wanted local repair, takes the old headline from
+ * *"prod is missing 4"* to *"prod is missing 17"* with nothing deployed and
+ * nothing on prod changed.
+ *
+ * The EXIT CODE is not keyed on that — it was 1 before the repair and 1 after,
+ * because `missing.length > 0` either way. It is the sentence a human reads
+ * that moves, and it moves in the alarming direction. So the repair is to the
+ * sentence, not to the gate:
+ *
+ *  - the reason carries its own DENOMINATOR (`behind by N of M documented
+ *    here`), so N cannot be read as a size without M beside it;
+ *  - `missing` is split into `deployableNow` (prod's build HAS the tool — a
+ *    description deploy carries it) and `needsCodeFirst` (prod's build lacks
+ *    the tool; no description deploy can close it). Both derived on the same
+ *    run, no remembered value;
+ *  - `regressedOnProd` — documented on prod, not here — is printed on EVERY
+ *    run including at zero. It is the only number in this report whose growth
+ *    is bad news about prod. Without it the reader has no channel that can
+ *    ever say "prod went backwards", and reads growth in `missing` as that.
+ *
  * ## Exit codes
  *
  *   0  DEPLOYED       every locally-documented tool is documented on prod too
- *   1  NOT DEPLOYED   prod is missing at least one, and all three controls held
+ *   1  NOT DEPLOYED   prod is behind on at least one, and all three controls held
  *   2  INCONCLUSIVE   a control failed or the transport did not answer
  *
  * Run from packages/core:
@@ -90,6 +116,22 @@ export type Verdict = {
   reason: string;
   /** Locally-documented tools prod does not document. Empty on DEPLOYED. */
   missing: string[];
+  /**
+   * `missing` where prod's build HAS the tool — a description deploy carries
+   * these as they stand.
+   */
+  deployableNow: string[];
+  /**
+   * `missing` where prod's build does not carry the tool at all. No
+   * description deploy can close these; the code has to land first.
+   */
+  needsCodeFirst: string[];
+  /**
+   * Documented on PROD and NOT in this tree. The ONLY set whose growth means
+   * prod went BACKWARDS — every other number here grows when this tree
+   * improves. Printed at zero on purpose.
+   */
+  regressedOnProd: string[];
   /** Tools this tree has that prod's build does not carry at all. */
   onlyLocal: string[];
   /** Tools prod carries that this tree does not — a backwards deploy. */
@@ -126,7 +168,15 @@ export function decide(args: {
   const onlyLocal = localNames.filter((n) => !prodNames.includes(n));
   const onlyProd = prodNames.filter((n) => !localNames.includes(n));
   const missing = local.documented.filter((n) => !prod.documented.includes(n));
-  const base = { missing, onlyLocal, onlyProd };
+  // `missing` fuses two causes that move in opposite directions: prod falling
+  // behind, and this tree documenting more. Split on the SAME run — no
+  // remembered previous value, which this script is not allowed to keep.
+  const deployableNow = missing.filter((n) => prodNames.includes(n));
+  const needsCodeFirst = missing.filter((n) => !prodNames.includes(n));
+  // The opposite direction. This is the only set here whose growth is bad news
+  // about PROD; `missing` grows when somebody does the work locally.
+  const regressedOnProd = prod.documented.filter((n) => !local.documented.includes(n));
+  const base = { missing, deployableNow, needsCodeFirst, regressedOnProd, onlyLocal, onlyProd };
 
   // The auth control is tested FIRST on purpose. A 403 parses into zero tools,
   // so it trips the population guard too — and "no denominator" is a true but
@@ -164,7 +214,18 @@ export function decide(args: {
   }
   return missing.length === 0
     ? { status: 'DEPLOYED', reason: 'prod documents every tool this tree does', ...base }
-    : { status: 'NOT_DEPLOYED', reason: `prod is missing ${missing.length}`, ...base };
+    : {
+        status: 'NOT_DEPLOYED',
+        // NOT "prod is missing N". N is |local.documented \ prod.documented|,
+        // so with prod frozen it rises every time this tree documents another
+        // tool — the alarming direction is "somebody did the work". The
+        // sentence carries its own denominator and names which side moved.
+        reason:
+          `the deploy is BEHIND by ${missing.length} of the ${local.documented.length} ` +
+          `description(s) this tree documents — prod carries ${local.documented.length - missing.length}` +
+          `; prod documents ${regressedOnProd.length} this tree does not`,
+        ...base,
+      };
 }
 
 /* ------------------------------------------------------------------ */
@@ -290,7 +351,24 @@ async function main(): Promise<number> {
     console.log('     (set differences suppressed — prod returned no tool list to difference against)');
     return code;
   }
-  if (verdict.missing.length) console.log(`     missing on prod:  ${verdict.missing.join(', ')}`);
+  if (verdict.missing.length) {
+    console.log(`     behind on prod:  ${verdict.missing.join(', ')}`);
+    console.log(
+      `       deployable now (prod's build HAS the tool)   ${verdict.deployableNow.length}` +
+        (verdict.deployableNow.length ? `: ${verdict.deployableNow.join(', ')}` : ''),
+    );
+    console.log(
+      `       needs the CODE deploy first (prod lacks it)  ${verdict.needsCodeFirst.length}` +
+        (verdict.needsCodeFirst.length ? `: ${verdict.needsCodeFirst.join(', ')}` : ''),
+    );
+  }
+  // Printed at zero on purpose, and printed on DEPLOYED too. Every other
+  // number above rises when THIS TREE documents another tool; this is the one
+  // that can only rise when prod has something this tree lost.
+  console.log(
+    `     documented on PROD and not here  ${verdict.regressedOnProd.length}` +
+      (verdict.regressedOnProd.length ? `: ${verdict.regressedOnProd.join(', ')}   ⚠ prod is AHEAD` : '   ← the only shape that means prod regressed'),
+  );
   if (verdict.onlyLocal.length) {
     console.log(
       `     tools this tree has and prod's build does not (${verdict.onlyLocal.length}): ${verdict.onlyLocal.join(', ')}`,

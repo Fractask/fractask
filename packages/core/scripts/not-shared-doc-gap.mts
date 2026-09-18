@@ -12,10 +12,12 @@
  *     not-shared-marker      what a tool SAYS      tools/list prose   prod 1 of 32
  *     not-shared-behaviour   what a tool ANSWERS   tools/call         prod 14 NOT_SHARED
  *
- * The marker's verdict is `prod is missing 4` — the four the LOCAL TREE
- * documents and prod's build does not. That is a deploy-lag number, and it is
- * correct. But it is computed SAY-vs-SAY, across two builds. Nobody has ever
- * crossed the two axes on the SAME build.
+ * The marker's verdict is that the deploy is BEHIND by four — the four the
+ * LOCAL TREE documents and prod's build does not. That is a deploy-lag number,
+ * and it is correct. But it is computed SAY-vs-SAY, across two builds. Nobody
+ * has ever crossed the two axes on the SAME build. (The marker's reason string
+ * is quoted live below, never re-typed here — it was re-worded on 2026-09-18
+ * and a quotation in this header would already be the stale copy.)
  *
  * Do that and the 4 is the small number. On prod today, fourteen tools answer
  * `not_shared` and one of them mentions it in its description.
@@ -34,11 +36,20 @@
  * and it is the sharper question. Named here as the next row rather than
  * folded into this one.
  *
- * ⚠️ AND IT CARRIES A TRIPWIRE. `tasks.test.ts` pins the doc half for the three
- * collection tools with `move_task` as its NEG-CTL — the undocumented write
- * path. `move_task` is in the gap list below, which is exactly what makes it a
- * usable control. Documenting it kills that control. `DG-NEGCTL-ALIVE` fails
- * loudly if it ever leaves the list, so the control cannot die quietly.
+ * ⚠️ 2026-09-18 09:4xZ — THE TRIPWIRE THIS HEADER USED TO DESCRIBE IS GONE, and
+ * the header outlived it by an hour. It read: *"`tasks.test.ts` pins the doc
+ * half for the three collection tools with `move_task` as its NEG-CTL …
+ * `DG-NEGCTL-ALIVE` fails loudly if it ever leaves the list."* `93797d2`
+ * (08:4xZ) retired that NEG-CTL — it was a control keyed on the defect, so it
+ * would have alarmed at its own fix — and `DG-NEGCTL-ALIVE` **stayed green
+ * through the change**, because it tested `gap.includes('move_task')` and the
+ * claim was about a file it never opened.
+ *
+ * So for an hour this script printed a live blocker on writing the gap's prose,
+ * for a control that had already been removed. Replaced by `DG-NEGCTL-FREE`,
+ * which READS `tasks.test.ts` and screens the whole gap list, with
+ * `DG-NEGCTL-MATCHER` as its POS-CTL so a zero reads as absent rather than as
+ * an unread file.
  *
  *   exit 0  no gap — every tool that answers it, documents it
  *   exit 1  GAP — at least one tool answers `not_shared` and does not say so
@@ -46,6 +57,7 @@
  * ════════════════════════════════════════════════════════════════════════════
  */
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -146,10 +158,28 @@ ctl('DG-ANSWER-POS', answers.has('get_task'),
   'POS-CTL — get_task is on the ANSWER axis too, so the two axes can agree; a gap is not an artefact of one always being empty')
 ctl('DG-ANSWER-NEG', rows.some((r) => r.notShared !== 'NOT_SHARED'),
   'NEG-CTL — at least one probed tool does NOT answer not_shared, so the ANSWER set is not "everything"')
-/* The tripwire. Not a pass/fail about quality — a pass/fail about whether
- * another file's control is still standing. */
-ctl('DG-NEGCTL-ALIVE', gap.includes('move_task'),
-  'move_task is still ANSWER∧¬SAY — tasks.test.ts uses it as the undocumented-write-path NEG-CTL, and documenting it would kill that control silently')
+/* The tripwire — a pass/fail about whether writing the gap's prose would kill
+ * a control in another file.
+ *
+ * ⚠️ 2026-09-18 09:4xZ — REPLACED. It used to be `gap.includes('move_task')`,
+ * a PROXY for "tasks.test.ts still uses move_task as its undocumented-write-
+ * path NEG-CTL". That control was retired one file over at 93797d2 (08:4xZ)
+ * and this leg stayed ✅ GREEN straight through the change — the proxy reads
+ * the gap list, and the claim is about a file it never opens. So it went on
+ * printing a live blocker for a control that no longer exists. A tripwire that
+ * never reads its subject cannot see its subject leave.
+ *
+ * It reads the file now, and it is keyed on the GAP list rather than on a
+ * named tool, so it survives the day the 13 get written. */
+const tasksTest = readFileSync(join(HERE, '..', 'src', 'tasks.test.ts'), 'utf8')
+const describesRe = (t: string) => new RegExp(`describes\\(\\s*findTool\\('${t}'\\)`)
+const namedNegCtl = gap.filter((t) => describesRe(t).test(tasksTest))
+ctl('DG-NEGCTL-MATCHER', describesRe('get_task').test(tasksTest),
+  "POS-CTL — the same regex DOES find get_task's describes() assertion in tasks.test.ts, so a zero below reads as absent rather than as an unread file")
+ctl('DG-NEGCTL-FREE', namedNegCtl.length === 0,
+  namedNegCtl.length === 0
+    ? 'no tool on the gap list is named in a describes() assertion in tasks.test.ts — writing the gap prose kills no control there (read off the file, not inferred)'
+    : `documenting ${namedNegCtl.join(', ')} would kill a NEG-CTL in tasks.test.ts — retire it there FIRST`)
 say('')
 
 const ctlFail = controls.filter((c) => !c.ok)
