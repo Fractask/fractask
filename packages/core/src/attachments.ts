@@ -100,14 +100,14 @@ export async function getAttachment(ctx: Context, id: string): Promise<TaskAttac
   const db = getDb();
   const rows = await db.select().from(taskAttachments).where(eq(taskAttachments.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Attachment');
   if (row.taskId) {
     await assertAccessibleExists(ctx, row.taskId);
   } else if (row.brainNoteId) {
     await assertAccessibleNoteExists(ctx, row.brainNoteId);
   } else {
     // Defensive: rows are required to belong to one of the two owners.
-    throw new NotFoundError(id);
+    throw new NotFoundError(id, 'Attachment');
   }
   return row;
 }
@@ -421,7 +421,7 @@ export async function deleteAttachment(ctx: Context, id: string): Promise<void> 
   const db = getDb();
   const rows = await db.select().from(taskAttachments).where(eq(taskAttachments.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Attachment');
   // Deletion is owner-only — same rule as task delete. For note-scoped
   // attachments, fall back to the access check (owner of the note can delete).
   if (row.taskId) {
@@ -437,7 +437,7 @@ export async function deleteAttachment(ctx: Context, id: string): Promise<void> 
       throw new ForbiddenError(row.brainNoteId, 'Note');
     }
   } else {
-    throw new NotFoundError(id);
+    throw new NotFoundError(id, 'Attachment');
   }
   await db.delete(taskAttachments).where(eq(taskAttachments.id, id));
   try {

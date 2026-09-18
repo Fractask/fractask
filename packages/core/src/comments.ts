@@ -70,7 +70,7 @@ export async function deleteComment(ctx: Context, id: string): Promise<void> {
   const db = getDb();
   const rows = await db.select().from(taskComments).where(eq(taskComments.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Comment');
   if (row.authorUserId !== ctx.userId && row.userId !== ctx.userId) {
     // The row EXISTS and this caller may not delete it. Reporting that as
     // NotFoundError is the same "not shared is not not-there" conflation this

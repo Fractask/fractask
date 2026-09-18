@@ -4,8 +4,27 @@ import { getDb } from './db/client.js';
 import { tasks, type BrainNote, type Task } from './schema.js';
 
 export class NotFoundError extends Error {
-  constructor(id: string) {
-    super(`Task ${id} not found`);
+  // `noun` defaults to 'Task' — same shape, same reason, as ForbiddenError
+  // below, which grew its own `noun` first. This error is thrown for NOTE,
+  // PROMPT, COMMENT, ATTACHMENT and USER ids too, and `Task <a comment id>
+  // not found` sends the reader looking for a task that was never a task.
+  //
+  // Measured at the answer surface before this repair (`npm run notfound-noun`,
+  // prod, 2026-09-16): 5 of 11 probed tools named the wrong referent. The
+  // source census that motivates the *remaining* sites is wider than that —
+  // 14 of 19 non-test call sites in this tree carried the hardcoded noun —
+  // because most of them are Focus/web paths no MCP tool reaches, so the
+  // probe cannot see them. **The probe's 5 is a floor on the harm, not the
+  // population.**
+  //
+  // The default is deliberate and load-bearing in one direction only: it keeps
+  // the 5 genuinely-task call sites reading exactly as before, so this change
+  // cannot silently alter a message that was already right. It is also the
+  // failure mode to watch — a NEW call site for a non-task id that forgets the
+  // argument inherits `Task` and is wrong again, silently. That is what
+  // `notfound-noun-repair.test.ts` pins per call site rather than once.
+  constructor(id: string, noun = 'Task') {
+    super(`${noun} ${id} not found`);
     this.name = 'NotFoundError';
   }
 }
@@ -372,7 +391,7 @@ export async function assertAccessibleNoteExists(
      WHERE n.id = ${id}
   `);
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Note');
   if (!row['__accessible']) throw new NotSharedNoteError(id);
   return rowToBrainNote(row);
 }

@@ -747,7 +747,7 @@ export async function answerPrompt(
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   if (row.status !== 'pending') throw new Error(`Prompt is already ${row.status}`);
 
   await assertAccessibleExists(ctx, row.taskId);
@@ -829,7 +829,7 @@ export async function markPromptOpened(ctx: Context, id: string): Promise<AgentP
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   await assertAccessibleExists(ctx, row.taskId);
   if (row.status === 'pending' && row.openedAt === null) {
     const ts = Date.now();
@@ -861,7 +861,7 @@ export async function sendBackPrompt(
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   if (row.status !== 'pending') throw new Error(`Prompt is already ${row.status}`);
   await assertAccessibleExists(ctx, row.taskId);
   await assertHumanResolver(ctx);
@@ -922,7 +922,7 @@ export async function markPromptNotRelevant(
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   if (row.status !== 'pending') throw new Error(`Prompt is already ${row.status}`);
   await assertAccessibleExists(ctx, row.taskId);
   await assertHumanResolver(ctx);
@@ -993,7 +993,7 @@ async function resolvePassOnParties(ctx: Context, input: PassOnInput): Promise<P
     throw new Error('Pass it to someone else — it is already in your queue');
   }
   const to = await findUserById(input.toUserId);
-  if (!to) throw new NotFoundError(input.toUserId);
+  if (!to) throw new NotFoundError(input.toUserId, 'User');
   const from = await findUserById(ctx.userId);
   return {
     toName: to.name ?? to.email ?? 'someone',
@@ -1052,7 +1052,7 @@ export async function passPromptOn(
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   if (row.status !== 'pending') throw new Error(`Prompt is already ${row.status}`);
   await assertAccessibleExists(ctx, row.taskId);
   await assertHumanResolver(ctx);
@@ -1113,7 +1113,7 @@ export async function cancelPrompt(ctx: Context, id: string): Promise<AgentPromp
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, id));
   const row = rows[0];
-  if (!row) throw new NotFoundError(id);
+  if (!row) throw new NotFoundError(id, 'Prompt');
   // A prompt id is an object type of its own, and the idempotent early return
   // below used to sit ABOVE every access check: a caller who knew the id of an
   // already-answered prompt got the question text AND the human's answer back,
@@ -1182,7 +1182,7 @@ export async function undoPromptResolution(ctx: Context, promptId: string): Prom
   const db = getDb();
   const rows = await db.select().from(agentPrompts).where(eq(agentPrompts.id, promptId));
   const row = rows[0];
-  if (!row) throw new NotFoundError(promptId);
+  if (!row) throw new NotFoundError(promptId, 'Prompt');
   await assertAccessibleExists(ctx, row.taskId);
 
   if (row.answeredByUserId !== ctx.userId) {
