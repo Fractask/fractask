@@ -117,6 +117,11 @@ import { deriveNotSharedNoteSubject } from './not-shared-note-subject.mts';
 // same reason the deploy marker imports it: a typed-in population is a number
 // with no clock, and this one has to go red the hour a new tool is registered.
 import { TOOLS } from '../src/mcp-tools.ts';
+// The two shipped `not_shared` message texts, for the GUIDANCE column below.
+// Imported, never re-typed: the needle this file matches on has to be the
+// string the product actually ships, or a wording change would read as
+// thirteen tools going silent.
+import { NOT_SHARED_MESSAGE, NOT_SHARED_SCRATCH_MESSAGE } from '../src/access.ts';
 
 /**
  * A task that EXISTS and is not shared with the runner. Defaulted to the id
@@ -268,6 +273,84 @@ export function classify(isError: boolean, text: string): Klass {
   if (isError) return 'OTHER_ERR';
   if (t === '[]' || t === '{}' || t === 'null' || t === '') return 'EMPTY_SUCCESS';
   return 'OTHER_OK';
+}
+
+/* ══ THE SECOND COLUMN — WHAT THE MESSAGE SAYS, NOT WHAT THE CODE IS ═════════
+ *
+ * Added 2026-09-18 07:5xZ from `Tx5g85uLq96D`'s 06:4xZ row. It lives HERE, in
+ * the probe that already makes these calls, and not in a fourth instrument —
+ * the row was explicit about that, and a fourth file reading the same wire is
+ * how this card ends up with four objects and no join.
+ *
+ * ⚠️ THREE OBJECTS, NOT TWO, and they are easy to run together:
+ *
+ *   1 · does the tool ANSWER `not_shared`?     ← `klass`, this file, since 09-03
+ *   2 · does its DESCRIPTION say so?           ← not-shared-doc-gap.mts, 09-18
+ *   3 · does the ANSWER'S MESSAGE carry the
+ *       do-not-recreate instruction?           ← THIS COLUMN
+ *
+ * (3) is the sharper one, because it is the surface an agent actually reads at
+ * the moment it decides what to do. A tool answering the right CODE with
+ * *"Task X not found"* in the message reproduces the original 2026-09-03 harm
+ * at exactly the point the harm happens.
+ */
+
+/**
+ * The needle, DERIVED from the two shipped messages rather than typed.
+ *
+ * `access.ts` hoists one clause out into a shared constant precisely so it
+ * cannot drift between the task wording and the scratchpad wording — its own
+ * comment says *"a shared clause keeps the part that matters from drifting"*.
+ * That constant is not exported, so this takes the **longest common substring
+ * of the two messages that are**, which is the same string by construction.
+ *
+ * Why not just type `'do not recreate it'`: a typed needle is a copy of the
+ * product with no clock on it. Reword the clause and a typed matcher reports
+ * *"every tool went silent"* — the alarming reading, off an edit that changed
+ * nothing about any tool. Derived, the needle moves with the product, and if
+ * someone ever un-shares the clause the derivation collapses and
+ * `GUIDANCE_NEEDLE_OK` below refuses the whole column instead of scoring it.
+ */
+export function longestCommonSubstring(a: string, b: string): string {
+  let best = '';
+  for (let i = 0; i < a.length; i++) {
+    for (let j = i + best.length + 1; j <= a.length; j++) {
+      const s = a.slice(i, j);
+      if (b.includes(s)) { if (s.length > best.length) best = s; } else break;
+    }
+  }
+  return best;
+}
+
+export const GUIDANCE_NEEDLE = longestCommonSubstring(NOT_SHARED_MESSAGE, NOT_SHARED_SCRATCH_MESSAGE).trim();
+
+/**
+ * Is the derived needle usable at all? A 3-character common substring would
+ * match every message on the board and score the whole column `CARRIES`.
+ *
+ * The floor is not a magic number: it is the length of the shortest clause
+ * that could plausibly carry an instruction, and the leg that matters is the
+ * POSITIVE CONTROL at the call site — `get_task`, the one tool this card has
+ * always measured as carrying the sentence. If the needle does not fire on
+ * `get_task`'s live message the run reports INCONCLUSIVE for this column and
+ * prints no scores, rather than announcing that every tool is silent.
+ */
+export const GUIDANCE_NEEDLE_OK = GUIDANCE_NEEDLE.length >= 12;
+
+export type Guidance = 'CARRIES' | 'SILENT' | 'N/A';
+
+/**
+ * Score ONE answer's message text.
+ *
+ * `N/A` for anything that is not a `not_shared` answer — the question only
+ * arises once a tool has produced the code. Keeping that as a third value
+ * rather than folding it into `SILENT` is the difference between *"13 tools
+ * answer not_shared and say nothing useful"* and *"13 tools do not answer
+ * not_shared at all"*, which are different findings with different fixes.
+ */
+export function gradeGuidance(klass: Klass, text: string): Guidance {
+  if (klass !== 'NOT_SHARED') return 'N/A';
+  return text.includes(GUIDANCE_NEEDLE) ? 'CARRIES' : 'SILENT';
 }
 
 /**
@@ -1988,6 +2071,12 @@ export type Row = {
   notShared: Klass;
   neverReal: Klass;
   distinguishes: boolean;
+  /**
+   * The SECOND column: given this row answered `not_shared`, does the message
+   * text carry the do-not-recreate instruction an agent would act on?
+   * `N/A` on every row whose answer is not `not_shared` — a different finding.
+   */
+  guidance: Guidance;
   /** Present on every row: one entry for a single-argument tool, several for a multi-argument one. */
   variants?: VariantRow[];
   /** The variants disagreed. The finding precondition 21 names, and it is invisible in `distinguishes`. */
@@ -2420,6 +2509,20 @@ async function main(): Promise<number> {
   // CLASSIFIER control: a body carrying neither marker must not classify as one.
   const classifierControlOk = classify(false, '{"id":"x","title":"a real row"}') === 'OTHER_OK';
 
+  /* GUIDANCE control — POSITIVE, and read off the SAME live call as the
+   * subject control above, not off a fixture.
+   *
+   * `get_task` is the tool this card was opened about and the one whose message
+   * has always carried the do-not-recreate sentence. If the derived needle does
+   * not fire on ITS live answer, the needle is wrong for this build and every
+   * `SILENT` below would be a fact about the matcher. The column then refuses
+   * rather than scoring — a zero with no control that fires is not a reading.
+   *
+   * ⚠️ It does NOT exit 2. The guidance column is an ADDITION; letting it take
+   * the whole run INCONCLUSIVE would let a wording change suppress the answer
+   * axis this file has published for two weeks. It suppresses itself only. */
+  const guidanceControlOk = GUIDANCE_NEEDLE_OK && gradeGuidance(subject.klass, subject.text) === 'CARRIES';
+
   const rows: Row[] = [];
   const adminGateReadings: { tool: string; closed: boolean; klass: Klass }[] = [];
   let authControlSameAsReal = false;
@@ -2523,6 +2626,7 @@ async function main(): Promise<number> {
     for (const p of PROBES) {
       if (skippedProbes.includes(p.tool)) continue;
       const variants: VariantRow[] = [];
+      const variantGuidance: Guidance[] = [];
       for (const v of variantsOf(p, url)) {
         const notShared = await callTool(url, auth, p.tool, v.args(NOT_SHARED_TASK_ID));
         const neverReal = await callTool(url, auth, p.tool, v.args(NEVER_REAL_TASK_ID));
@@ -2540,6 +2644,9 @@ async function main(): Promise<number> {
           readable,
           status: variantStatus({ notShared: notShared.klass, neverReal: neverReal.klass, readable }),
         });
+        // Read off the SAME answer the klass came from — the text is already on
+        // `Answer`; it was only ever being discarded at this narrowing.
+        variantGuidance.push(gradeGuidance(notShared.klass, notShared.text));
         // Read off the transport, not off the classification: a refusal is an
         // error, so a write that comes back WITHOUT one reached the mutation.
         // Accumulated across variants — a write that landed on ANY argument set
@@ -2561,6 +2668,11 @@ async function main(): Promise<number> {
         notShared: variants[0].notShared,
         neverReal: variants[0].neverReal,
         distinguishes: rolled.distinguishes,
+        // Graded off the FIRST variant's answer, to match the headline pair
+        // directly above it. A multi-argument row whose variants produced
+        // different message texts would be a finding about the variants, and
+        // this column is deliberately not the place it gets summarised away.
+        guidance: variantGuidance[0] ?? 'N/A',
         variants,
         varies: rolled.varies,
         unreachedVariants: rolled.unreachedVariants,
@@ -2669,6 +2781,7 @@ async function main(): Promise<number> {
         // Otherwise "both refused the same way" and "this caller cannot call
         // the tool at all" are the same output, which is precondition 12.
         distinguishes: notShared.klass !== neverReal.klass,
+        guidance: gradeGuidance(notShared.klass, notShared.text),
         reach,
         reachOk: d.reachArgs ? reach === 'OTHER_OK' : undefined,
         write: d.write,
@@ -2841,6 +2954,34 @@ async function main(): Promise<number> {
         : '   — not run (subject control failed first)'),
   );
   console.log(`  CLASS CTL   a body with neither marker → OTHER_OK` + (classifierControlOk ? '   ✅' : '   ⛔'));
+  {
+    /* ── the SECOND column, printed whether it fires or not ─────────────────
+     *
+     * Three numbers, and the third is the one that keeps the first two honest:
+     * a tool that does not answer `not_shared` is `N/A` here, not `SILENT`, so
+     * the denominator of this column is the ANSWER set and never the registry. */
+    const scored = rows.filter((r) => r.guidance !== 'N/A');
+    const silent = scored.filter((r) => r.guidance === 'SILENT');
+    console.log(
+      `  GUIDE CTL   needle derived from access.ts (${GUIDANCE_NEEDLE.length} ch, shared task/scratch clause) → get_task ` +
+        (guidanceControlOk
+          ? '   ✅ fires on the live message'
+          : GUIDANCE_NEEDLE_OK
+            ? '   ⛔ does NOT fire — the needle is wrong for this build, column SUPPRESSED'
+            : '   ⛔ derivation collapsed (clause no longer shared), column SUPPRESSED'),
+    );
+    if (guidanceControlOk) {
+      console.log(
+        `  GUIDANCE    ${scored.length - silent.length} of ${scored.length} tool(s) that ANSWER not_shared also carry the ` +
+          `do-not-recreate instruction in the message` +
+          (silent.length ? `\n              🔴 SILENT: ${silent.map((r) => r.tool).sort().join(' · ')}` : '   ✅ all of them'),
+      );
+      console.log(
+        `              (denominator is the ANSWER set, not the registry — ` +
+          `${rows.length - scored.length} probed row(s) do not answer not_shared and are N/A, not silent)`,
+      );
+    }
+  }
   {
     // Printed at zero on purpose: a safety control only visible when it fires
     // is indistinguishable from one that was never run.

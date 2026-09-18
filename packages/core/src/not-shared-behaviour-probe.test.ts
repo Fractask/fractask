@@ -76,15 +76,24 @@ import {
   ASK_NON_GOAL_TASK_ID,
   askHumanVariants,
   variantLanded,
+  gradeGuidance,
+  longestCommonSubstring,
+  GUIDANCE_NEEDLE,
+  GUIDANCE_NEEDLE_OK,
   type Row,
   type VariantRow,
   type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
 import { TOOLS } from './mcp-tools.ts';
+import { NOT_SHARED_MESSAGE, NOT_SHARED_SCRATCH_MESSAGE } from './access.ts';
 
 const row = (tool: string, notShared: Row['notShared'], neverReal: Row['neverReal']): Row => ({
   tool,
   note: '',
+  // The message axis is not what these fixtures are about; stated rather than
+  // defaulted, because `guidance` is REQUIRED on Row on purpose — a real row
+  // construction site that forgets it must not compile.
+  guidance: 'N/A',
   notShared,
   neverReal,
   distinguishes: notShared !== neverReal,
@@ -810,7 +819,7 @@ describe('create_upload — the first row taken from the frame\'s own to-do list
     // one that advice is false, and false remediation advice is worse than
     // none: it sends the reader to an enumerator that cannot see the damage.
     const v = decide({
-      rows: [{ tool: 'create_upload', note: '', notShared: 'OTHER_OK', neverReal: 'NOT_FOUND', distinguishes: true, write: true, landed: true }],
+      rows: [{ tool: 'create_upload', note: '', notShared: 'OTHER_OK', neverReal: 'NOT_FOUND', distinguishes: true, guidance: 'N/A', write: true, landed: true }],
       subjectControlOk: true,
       authControlSameAsReal: false,
       classifierControlOk: true,
@@ -1461,6 +1470,7 @@ function afuRow(variants: VariantRow[] = AFU_PROD_VARIANTS): Row {
   return {
     tool: 'attach_file_from_url',
     note: '',
+    guidance: 'N/A',
     notShared: variants[0].notShared,
     neverReal: variants[0].neverReal,
     distinguishes: rolled.distinguishes,
@@ -2128,5 +2138,63 @@ describe("decide — the coverage clause says WHICH KIND of never-asked", () => 
     });
     assert.deepEqual(flat.unprobed, split.unprobed);
     assert.equal(flat.status, split.status);
+  });
+});
+
+/**
+ * ## The GUIDANCE column — the MESSAGE axis, added 2026-09-18
+ *
+ * Three objects this card keeps nearly running together: what a tool ANSWERS
+ * (`klass`), what its DESCRIPTION says (`not-shared-doc-gap.mts`), and what the
+ * answer's MESSAGE TEXT tells the agent to do. This column is the third, and
+ * it is the surface an agent actually reads at the moment it decides whether to
+ * recreate a row.
+ */
+describe('gradeGuidance — the message axis', () => {
+  it('the needle is DERIVED from the two shipped messages, not typed', () => {
+    // The point of the derivation: it cannot disagree with the product.
+    assert.ok(NOT_SHARED_MESSAGE.includes(GUIDANCE_NEEDLE));
+    assert.ok(NOT_SHARED_SCRATCH_MESSAGE.includes(GUIDANCE_NEEDLE));
+    assert.ok(GUIDANCE_NEEDLE_OK, `derived needle is only ${GUIDANCE_NEEDLE.length} ch: ${JSON.stringify(GUIDANCE_NEEDLE)}`);
+  });
+
+  it('and it carries the instruction, not just any shared words', () => {
+    // A needle that were merely the longest shared *phrase* could be something
+    // like "This task exists but". Assert it is the part that TELLS YOU WHAT
+    // NOT TO DO — the only part whose absence is a defect.
+    assert.match(GUIDANCE_NEEDLE, /recreate/);
+  });
+
+  it('a real not_shared message CARRIES', () => {
+    assert.equal(gradeGuidance('NOT_SHARED', `not_shared: Task X not shared — ${NOT_SHARED_MESSAGE}`), 'CARRIES');
+  });
+
+  it('🔑 the right CODE with a bare message is SILENT — the defect this column exists to see', () => {
+    // The 2026-09-03 harm at the surface the agent reads: correct code, and a
+    // message that still invites a recreate.
+    assert.equal(gradeGuidance('NOT_SHARED', 'not_shared: Task X not found'), 'SILENT');
+  });
+
+  it('a non-not_shared answer is N/A, never SILENT', () => {
+    // Folding these into SILENT would inflate the numerator with rows whose
+    // finding is a different one — they do not answer not_shared at all.
+    for (const k of ['NOT_FOUND', 'OTHER_ERR', 'EMPTY_SUCCESS', 'OTHER_OK'] as const) {
+      assert.equal(gradeGuidance(k, NOT_SHARED_MESSAGE), 'N/A', k);
+    }
+  });
+
+  it('N/A even when the text happens to contain the clause — the klass decides admission', () => {
+    // A successful read of a card whose BODY quotes the clause (this card's own
+    // description does) must not be scored on this axis at all. Same shape as
+    // the 2026-09-14 21:5xZ substring-census bug one function over.
+    assert.equal(gradeGuidance('OTHER_OK', `{"description":"${NOT_SHARED_MESSAGE}"}`), 'N/A');
+  });
+
+  it('longestCommonSubstring is a real LCS, not a prefix test', () => {
+    assert.equal(longestCommonSubstring('xxABCDyy', 'zzABCDww'), 'ABCD');
+    assert.equal(longestCommonSubstring('abc', 'xyz'), '');
+    // NEG-CTL for the length floor: two strings sharing only a space must not
+    // clear GUIDANCE_NEEDLE_OK's bar.
+    assert.ok(longestCommonSubstring('a b', 'c d').length < 12);
   });
 });
