@@ -95,6 +95,11 @@
  *   0  DISTINGUISHES   every AT-RISK tool was probed, and every one tells the
  *                      two subjects apart
  *   1  CONFLATES       at least one probed tool does not, and all controls held
+ *   1  SILENT_GUIDANCE every probed tool tells the two subjects apart, but at
+ *                      least one answers `not_shared` with a message that does
+ *                      NOT carry the do-not-recreate instruction. The CODE is
+ *                      right and the SURFACE AN AGENT READS is not — which is
+ *                      the 2026-09-03 harm at the exact point it happens
  *   1  INCOMPLETE      every PROBED tool distinguishes, and at-risk tools were
  *                      never asked. Exit 1, not 0: a green over a hand-picked
  *                      twelfth of the surface is the reading this card rejects
@@ -2108,9 +2113,16 @@ export type Verdict = {
    * hand-picked twelfth of the surface is the comforting reading the card
    * exists to reject.
    */
-  status: 'DISTINGUISHES' | 'CONFLATES' | 'VARIES' | 'INCOMPLETE' | 'INCONCLUSIVE';
+  status: 'DISTINGUISHES' | 'CONFLATES' | 'VARIES' | 'SILENT_GUIDANCE' | 'INCOMPLETE' | 'INCONCLUSIVE';
   reason: string;
   conflating: string[];
+  /**
+   * Tools that ANSWER `not_shared` and whose message does not carry the
+   * do-not-recreate instruction. Present on every shape, so it is printable at
+   * zero — added 2026-09-18 11:4xZ, when the column turned out to have been
+   * measured, printed with a 🔴, and load-bearing on nothing for three hours.
+   */
+  silentGuidance: string[];
   /**
    * Tools whose variants DISAGREED — the verdict is a function of an argument
    * that has nothing to do with access. Present on every shape, so it is
@@ -2133,11 +2145,26 @@ export type Verdict = {
  * reading decorative, which is the one failure a suite of pure `decide` tests
  * cannot see.
  *
- * `0` covered-and-clean · `1` CONFLATES / VARIES / INCOMPLETE · `2` INCONCLUSIVE.
+ * `0` covered-and-clean · `1` CONFLATES / VARIES / SILENT_GUIDANCE / INCOMPLETE ·
+ * `2` INCONCLUSIVE.
+ *
+ * ⚠️ `SILENT_GUIDANCE` was added 2026-09-18 11:4xZ and the word it repairs is
+ * **covered-and-clean**. The guidance column was built at `f6db4a2` (07:52Z),
+ * printed its own 🔴 for a SILENT row from the first run, and reached this
+ * function through nothing at all: a build where every tool answered the right
+ * code with *"Task X not found"* in the message scored `DISTINGUISHES` → `0` →
+ * "covered-and-clean". A column that a reader sees in red and the gate cannot
+ * see is the same shape this card retired three tripwires for today.
  */
 export function exitCodeFor(verdict: Verdict): number {
   if (verdict.status === 'DISTINGUISHES') return 0;
-  if (verdict.status === 'CONFLATES' || verdict.status === 'VARIES' || verdict.status === 'INCOMPLETE') return 1;
+  if (
+    verdict.status === 'CONFLATES' ||
+    verdict.status === 'VARIES' ||
+    verdict.status === 'SILENT_GUIDANCE' ||
+    verdict.status === 'INCOMPLETE'
+  )
+    return 1;
   return 2;
 }
 
@@ -2211,6 +2238,28 @@ export function decide(args: {
    * not fail in.
    */
   unprobedPartition?: { open: string[]; blocked: string[]; unreachable: string[] };
+  /**
+   * Optional and defaulted to `true` so existing callers are unchanged: did the
+   * GUIDE control fire — i.e. is `GUIDANCE_NEEDLE` derivable AND does it match
+   * `get_task`'s live message?
+   *
+   * ⚠️ This is what keeps the new clause below from being a matcher's opinion.
+   * A dead needle scores EVERY `not_shared` row `SILENT` at once, which reads
+   * as "the whole product stopped carrying the sentence" off an edit that
+   * changed no tool. So `false` here SUPPRESSES the clause rather than firing
+   * it — the same suppression the report already applies to the printed column,
+   * and the same direction the file's own note at `guidanceControlOk` argues
+   * for: the column may refuse to speak, it may not take the answer axis down
+   * with it.
+   *
+   * Defaulting to `true` is deliberate and is not the usual "unchanged for
+   * existing callers" defaulting: a row only reaches `SILENT` by having
+   * answered `not_shared` and been scored, and a caller that never scored one
+   * has no `SILENT` rows to gate on. The default is therefore inert unless a
+   * caller supplies real guidance readings, which is exactly when it should
+   * bite.
+   */
+  guidanceControlOk?: boolean;
 }): Verdict {
   // A row CONFLATES when some variant answered the two refused subjects
   // identically AND that variant is known to have reached the handler. For a
@@ -2227,7 +2276,13 @@ export function decide(args: {
     .map((r) => r.tool);
   const landedWrites = args.rows.filter((r) => r.write && r.landed).map((r) => r.tool);
   const unprobed = args.frame?.unprobed ?? [];
-  const base = { conflating, varying, unreached, landedWrites, unprobed };
+  // Scored rows only. `N/A` is not a quiet `SILENT`: a tool that never answered
+  // `not_shared` has not failed this column, it has not entered it — which is
+  // why the printed denominator is the ANSWER set and why this filter matches
+  // it exactly rather than re-deriving the population a second way.
+  const silentGuidance =
+    args.guidanceControlOk === false ? [] : args.rows.filter((r) => r.guidance === 'SILENT').map((r) => r.tool);
+  const base = { conflating, varying, unreached, landedWrites, unprobed, silentGuidance };
 
   // The STATE leg is ordered ahead of even the WRITE-SAFETY answer leg, because
   // it is the one reading that is about the world rather than about a reply.
@@ -2403,6 +2458,41 @@ export function decide(args: {
             `${args.frame.unclassifiedArgs.map((a) => `${a.tool}.${a.prop}`).join(', ')})`
           : 'a frame control failed') +
         ' — so the probed set has no readable denominator and the pass cannot be scoped',
+      ...base,
+    };
+  }
+
+  // SILENT_GUIDANCE — every probed tool answers the right CODE, and at least
+  // one of them says nothing useful in the MESSAGE.
+  //
+  // Ordered AFTER CONFLATES/VARIES and BEFORE INCOMPLETE, and both halves of
+  // that placement are arguments rather than taste:
+  //
+  //   · after CONFLATES — a tool that cannot tell the two subjects apart has a
+  //     wrong answer; a tool whose message is bare has a right answer and a
+  //     useless one. The wrong answer is the bigger defect and must keep the
+  //     headline.
+  //   · before INCOMPLETE — INCOMPLETE is a COVERAGE gap ("we did not ask"),
+  //     this is a MEASURED defect on a row we did ask. A gap must never outrank
+  //     a finding, or the finding is reported as a to-do list. Same ordering
+  //     rule CONFLATES already follows, and `coverage` is still appended below
+  //     so the gap is not lost to the promotion.
+  //
+  // What makes this worth a status rather than a footnote: the whole card is
+  // about an agent reading an error and deciding whether to RECREATE a row.
+  // That decision is made off the message text, not off the status code. A
+  // build that answers `not_shared` and then says *"Task X not found"* has
+  // moved the defect one layer out and closed nothing.
+  if (silentGuidance.length > 0) {
+    return {
+      status: 'SILENT_GUIDANCE',
+      reason:
+        `all ${args.rows.length} probed tool(s) tell the two subjects apart, but ` +
+        `${silentGuidance.length} of them answer not_shared with a message that does NOT carry the ` +
+        `do-not-recreate instruction (${silentGuidance.join(', ')}) — the code is right and the surface an ` +
+        'agent reads is not' +
+        coverage +
+        varyingClause(varying, unreached),
       ...base,
     };
   }
@@ -2887,6 +2977,11 @@ async function main(): Promise<number> {
     moveFixtureMoved:
       moveFixtureParentBefore !== null && moveFixtureParentAfter !== moveFixtureParentBefore,
     scratchFixtureMoved: scratchFiledBefore !== null && scratchFiledAfter !== scratchFiledBefore,
+    // Read from THIS RUN's live GUIDE control, never assumed: if the needle did
+    // not fire on get_task's real message the column is suppressed here exactly
+    // as it is in the printed report, so the two can never disagree about
+    // whether a `SILENT` was scoreable.
+    guidanceControlOk,
     frame,
     // Built from THIS RUN's admin-gate readings, not from ADMIN_GATED alone —
     // a gate that has opened since the constant was written must surface as
@@ -2940,7 +3035,14 @@ async function main(): Promise<number> {
     return code;
   }
 
-  const glyph = { DISTINGUISHES: '🟢', CONFLATES: '🔴', VARIES: '🟠', INCOMPLETE: '🟡', INCONCLUSIVE: '⛔' }[verdict.status];
+  const glyph = {
+    DISTINGUISHES: '🟢',
+    CONFLATES: '🔴',
+    VARIES: '🟠',
+    SILENT_GUIDANCE: '🔴',
+    INCOMPLETE: '🟡',
+    INCONCLUSIVE: '⛔',
+  }[verdict.status];
   console.log(`# not_shared BEHAVIOUR probe — ${url}`);
   console.log(`  axis        what the tool ANSWERS. The deploy marker reads what it SAYS — run both.`);
   console.log(`  SUBJECT CTL ${NOT_SHARED_TASK_ID} → ${subject.klass}` + (subjectControlOk ? '   ✅ exists, not shared' : '   ⛔ wrong kind of row'));

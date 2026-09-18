@@ -81,6 +81,7 @@ import {
   GUIDANCE_NEEDLE,
   GUIDANCE_NEEDLE_OK,
   type Row,
+  type Verdict,
   type VariantRow,
   type RegisteredTool,
 } from '../scripts/not-shared-behaviour-probe.mts';
@@ -809,6 +810,120 @@ describe('INCOMPLETE — the status the exit contract was missing', () => {
     const v = decide({ ...prodToday(), subjectControlOk: false, frame: coveredFrame });
     assert.equal(v.status, 'INCONCLUSIVE');
     assert.match(v.reason, /did not read as not-shared/);
+  });
+
+  /* ══ SILENT_GUIDANCE — added 2026-09-18 11:4xZ ═════════════════════════════
+   *
+   * The guidance column shipped at `f6db4a2` (07:52Z), printed its own 🔴 for a
+   * SILENT row, and reached `exitCodeFor` through NOTHING. A build where every
+   * tool answered the right code with *"Task X not found"* in the message
+   * scored `DISTINGUISHES` → exit `0` → the word the contract uses for `0` is
+   * **covered-and-clean**.
+   *
+   * These pin the gate, both orderings around it, and — the leg that matters —
+   * that a dead needle cannot MINT the finding.
+   */
+  const silentRow = (tool: string): Row => ({ ...row(tool, 'NOT_SHARED', 'NOT_FOUND'), guidance: 'SILENT' });
+  const carriesRow = (tool: string): Row => ({ ...row(tool, 'NOT_SHARED', 'NOT_FOUND'), guidance: 'CARRIES' });
+
+  it('gates: a tool answering the right CODE with a bare MESSAGE is not a clean run', () => {
+    const v = decide({
+      ...prodToday(),
+      rows: [carriesRow('get_task'), silentRow('attach_file')],
+      frame: coveredFrame,
+    });
+    assert.equal(v.status, 'SILENT_GUIDANCE');
+    assert.equal(exitCodeFor(v), 1);
+    assert.deepEqual(v.silentGuidance, ['attach_file']);
+    assert.match(v.reason, /do-not-recreate instruction/);
+    assert.match(v.reason, /attach_file/);
+  });
+
+  it('🔑 a FAILED guide control SUPPRESSES the column — it does not fire it', () => {
+    // The leg this whole clause rests on. `GUIDANCE_NEEDLE` is DERIVED from
+    // access.ts, so a wording change can kill it — and a dead needle scores
+    // EVERY not_shared row SILENT at once. Firing on that would report "the
+    // product stopped carrying the sentence everywhere" off an edit that
+    // changed no tool: the alarming reading, reachable from a broken matcher.
+    //
+    // This is the same direction the printed report already takes, and the two
+    // now read one flag, so they cannot disagree about whether a SILENT was
+    // scoreable.
+    const rows = [carriesRow('get_task'), silentRow('attach_file')];
+    assert.equal(decide({ ...prodToday(), rows, frame: coveredFrame, guidanceControlOk: true }).status, 'SILENT_GUIDANCE');
+
+    const suppressed = decide({ ...prodToday(), rows, frame: coveredFrame, guidanceControlOk: false });
+    assert.equal(suppressed.status, 'DISTINGUISHES');
+    assert.equal(exitCodeFor(suppressed), 0);
+    assert.deepEqual(suppressed.silentGuidance, []);
+  });
+
+  it('a CONFLATING tool still outranks it — a wrong answer beats a useless one', () => {
+    // Ordering leg 1. A tool that cannot tell the subjects apart is the bigger
+    // defect and must keep the headline; the message axis is a second finding
+    // about a tool that at least got the code right.
+    const v = decide({
+      ...prodToday(),
+      rows: [silentRow('attach_file'), row('list_tasks', 'EMPTY_SUCCESS', 'EMPTY_SUCCESS')],
+      frame: coveredFrame,
+    });
+    assert.equal(v.status, 'CONFLATES');
+    // …and the silent row is NOT lost to the promotion — it is still on the verdict.
+    assert.deepEqual(v.silentGuidance, ['attach_file']);
+  });
+
+  it('it outranks a COVERAGE gap, and the gap survives in the sentence', () => {
+    // Ordering leg 2, and the mirror of the CONFLATES/INCOMPLETE test above:
+    // INCOMPLETE says "we did not ask", this says "we asked and it failed". A
+    // gap must never outrank a finding, or the finding reads as a to-do list.
+    const v = decide({
+      ...prodToday(),
+      rows: [carriesRow('get_task'), silentRow('attach_file')],
+      frame: gappyFrame,
+    });
+    assert.equal(v.status, 'SILENT_GUIDANCE');
+    assert.match(v.reason, /1 of 2 AT-RISK tool\(s\) were never asked \(delete_task\)/);
+    assert.deepEqual(v.unprobed, ['delete_task']);
+  });
+
+  it('N/A is not a quiet SILENT — a tool that never answered not_shared has not entered the column', () => {
+    // The denominator of this column is the ANSWER set, never the registry.
+    // Folding N/A into SILENT would turn "13 tools say nothing useful" into
+    // "13 tools do not answer not_shared at all" — different findings, and the
+    // second one is already CONFLATES's job.
+    const v = decide({ ...prodToday(), rows: [carriesRow('get_task'), row('update_task', 'NOT_SHARED', 'NOT_FOUND')], frame: coveredFrame });
+    assert.equal(v.status, 'DISTINGUISHES');
+    assert.deepEqual(v.silentGuidance, []);
+  });
+
+  it('reports silentGuidance on every verdict shape, so it is printable at zero', () => {
+    // Same rule `unprobed` follows: a finding only visible when it fires is
+    // indistinguishable from one nobody looked for.
+    const shapes = [
+      decide({ ...prodToday(), rows: clean, frame: coveredFrame }),
+      decide({ ...prodToday(), rows: clean, frame: gappyFrame }),
+      decide({ ...prodNotesToday(), frame: gappyFrame }),
+      decide({ ...prodToday(), subjectControlOk: false, frame: gappyFrame }),
+      decide({ ...prodToday(), rows: [carriesRow('get_task'), silentRow('attach_file')], frame: coveredFrame }),
+    ];
+    for (const v of shapes) assert.ok(Array.isArray(v.silentGuidance), `${v.status} must carry silentGuidance`);
+  });
+
+  it('the exit contract has no silent 0 left — every status maps somewhere deliberate', () => {
+    // Pins `exitCodeFor` itself rather than a copy of its table. A status added
+    // later and not listed here lands in the `return 2` bucket, which is loud;
+    // a status added and quietly mapped to 0 is the failure this asserts away.
+    const codes: Record<Verdict['status'], number> = {
+      DISTINGUISHES: 0,
+      CONFLATES: 1,
+      VARIES: 1,
+      SILENT_GUIDANCE: 1,
+      INCOMPLETE: 1,
+      INCONCLUSIVE: 2,
+    };
+    for (const [status, want] of Object.entries(codes)) {
+      assert.equal(exitCodeFor({ ...decide({ ...prodToday(), rows: clean, frame: coveredFrame }), status: status as Verdict['status'] }), want, status);
+    }
   });
 });
 
