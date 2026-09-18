@@ -249,21 +249,88 @@ describe('framing — a number that grows when somebody does the work', () => {
   });
 
   it('missing splits into what a description deploy can carry and what it cannot', () => {
-    // `office_pulse` is documented here and prod\'s build does not carry the
-    // tool at all — no amount of redeploying descriptions closes that row.
+    // `brand_new_tool` is documented here, is NOT adminOnly, and prod's build
+    // does not carry it — no amount of redeploying descriptions closes that row.
+    //
+    // ⚠️ This fixture used to name `office_pulse`, which is a REAL adminOnly
+    // tool — i.e. the one shape for which "prod's build does not carry it" is
+    // exactly the wrong reading. See the UNOBSERVABLE test below.
     const v = decide({
-      local: censusSide([doc('get_task'), doc('list_tasks'), doc('office_pulse')]),
+      local: censusSide([doc('get_task'), doc('list_tasks'), doc('brand_new_tool')]),
       prod: censusSide([doc('get_task'), undoc('list_tasks')]),
       prodNames: ['get_task', 'list_tasks'],
-      localNames: ['get_task', 'list_tasks', 'office_pulse'],
+      localNames: ['get_task', 'list_tasks', 'brand_new_tool'],
+      localAdminOnly: [],
       authControlSameAsReal: false,
       matcherControlHits: 0,
     });
-    assert.deepEqual(v.missing, ['list_tasks', 'office_pulse']);
+    assert.deepEqual(v.missing, ['brand_new_tool', 'list_tasks']); // censusSide sorts
     assert.deepEqual(v.deployableNow, ['list_tasks']);
-    assert.deepEqual(v.needsCodeFirst, ['office_pulse']);
-    // The split is a partition of `missing` — no row falls out of both buckets
+    assert.deepEqual(v.needsCodeFirst, ['brand_new_tool']);
+    assert.deepEqual(v.missingButUnobservable, []);
+    // The split is a partition of `missing` — no row falls out of every bucket
     // into silence.
-    assert.equal(v.deployableNow.length + v.needsCodeFirst.length, v.missing.length);
+    assert.equal(
+      v.deployableNow.length + v.needsCodeFirst.length + v.missingButUnobservable.length,
+      v.missing.length,
+    );
+  });
+
+  /* ── absence from prod's tools/list has TWO causes ──────────────────────────
+   *
+   * `tools/list` hides `adminOnly` tools from a non-admin caller. So an admin
+   * tool prod's build DOES carry is absent from prod's response, and every
+   * `!prodNames.includes(n)` test reads that as "prod lacks it". Measured on
+   * prod 2026-09-18: the 7 names in `onlyLocal` were byte-for-byte the
+   * `adminOnly` set, and both `nonAdminLocal \ prod` and `prod \ nonAdminLocal`
+   * were EMPTY — the two visible tool sets are identical.
+   *
+   * The pair below is the point: the SAME fixture, the SAME absence from
+   * prodNames, and the only thing that varies is whether the tool is flagged
+   * adminOnly. If the two rows ever read the same, this partition is a
+   * relabelling rather than a second axis. */
+  const hiddenFixture = (adminOnly: string[]) =>
+    decide({
+      local: censusSide([doc('get_task'), doc('office_pulse')]),
+      prod: censusSide([doc('get_task')]),
+      prodNames: ['get_task'],
+      localNames: ['get_task', 'office_pulse'],
+      localAdminOnly: adminOnly,
+      authControlSameAsReal: false,
+      matcherControlHits: 0,
+    });
+
+  it('an adminOnly tool absent from prod\'s tools/list is UNOBSERVABLE, not undeployed', () => {
+    const v = hiddenFixture(['office_pulse']);
+    assert.deepEqual(v.missing, ['office_pulse']);
+    assert.deepEqual(v.missingButUnobservable, ['office_pulse']);
+    assert.deepEqual(
+      v.needsCodeFirst,
+      [],
+      'an adminOnly tool was reported as "prod lacks it" — that is prod\'s response to THIS token, not prod\'s build',
+    );
+    assert.deepEqual(v.unobservableOnProd, ['office_pulse']);
+  });
+
+  it('NEG-CTL — the SAME row, not flagged adminOnly, DOES read as needing the code deploy', () => {
+    const v = hiddenFixture([]);
+    assert.deepEqual(
+      v.needsCodeFirst,
+      ['office_pulse'],
+      'with the adminOnly flag removed the row must fall back to needsCodeFirst — otherwise the new bucket is not keyed on the flag at all',
+    );
+    assert.deepEqual(v.missingButUnobservable, []);
+    assert.deepEqual(v.unobservableOnProd, []);
+  });
+
+  it('the live TOOLS table really does carry adminOnly tools — the flag is not a dead field', () => {
+    // POS-CTL for the two tests above: if nothing in the real table were ever
+    // flagged, the partition would be exercised only by fixtures and could be
+    // silently wrong about production forever.
+    const flagged = (TOOLS as unknown as { name: string; adminOnly?: boolean }[]).filter((t) => t.adminOnly);
+    assert.ok(
+      flagged.length > 0,
+      'no tool in TOOLS is adminOnly — either the flag was removed (delete this partition) or the field was renamed',
+    );
   });
 });

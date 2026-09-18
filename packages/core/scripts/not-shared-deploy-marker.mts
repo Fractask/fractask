@@ -127,13 +127,36 @@ export type Verdict = {
    */
   needsCodeFirst: string[];
   /**
+   * `missing` where the tool is `adminOnly`, so prod's `tools/list` would hide
+   * it from this token whether or not the deploy carried the description. These
+   * rows are UNMEASURABLE from here, not undeployed — kept out of
+   * `needsCodeFirst` so that bucket keeps meaning "the code has to land first".
+   */
+  missingButUnobservable: string[];
+  /**
    * Documented on PROD and NOT in this tree. The ONLY set whose growth means
    * prod went BACKWARDS — every other number here grows when this tree
    * improves. Printed at zero on purpose.
    */
   regressedOnProd: string[];
-  /** Tools this tree has that prod's build does not carry at all. */
+  /**
+   * Tools in this tree that prod's `tools/list` did not return.
+   *
+   * ⚠️ NOT "prod's build does not carry them" — that is what this field was
+   * called until 2026-09-18 10:5xZ, and it was wrong. `tools/list` filters
+   * `adminOnly` tools out for a non-admin caller, so an admin tool present in
+   * prod's build is ABSENT FROM THIS RESPONSE. Measured that day: the 7 names
+   * here were byte-for-byte the `adminOnly` set, and `nonAdminLocal \ prod` and
+   * `prod \ nonAdminLocal` were BOTH empty — i.e. the two builds' visible tool
+   * sets are identical and the 7 were an identity filter read as a deploy lag.
+   */
   onlyLocal: string[];
+  /**
+   * The subset of `onlyLocal` this token CANNOT observe on prod either way,
+   * because they are `adminOnly` and `tools/list` hides them from us. Absence
+   * here is a fact about the reader, not about prod.
+   */
+  unobservableOnProd: string[];
   /** Tools prod carries that this tree does not — a backwards deploy. */
   onlyProd: string[];
 };
@@ -161,22 +184,43 @@ export function decide(args: {
   prod: Side;
   prodNames: string[];
   localNames: string[];
+  /**
+   * Local tool names flagged `adminOnly`. Needed because prod's `tools/list`
+   * omits them for a non-admin caller: without this, their absence from prod's
+   * response is indistinguishable from prod's build not having them, and the
+   * report prints a claim about prod's BUILD that it derived from prod's
+   * RESPONSE TO THIS IDENTITY.
+   */
+  localAdminOnly: string[];
   authControlSameAsReal: boolean;
   matcherControlHits: number;
 }): Verdict {
   const { local, prod, prodNames, localNames } = args;
+  const adminOnly = args.localAdminOnly ?? [];
   const onlyLocal = localNames.filter((n) => !prodNames.includes(n));
   const onlyProd = prodNames.filter((n) => !localNames.includes(n));
+  // Absence from prod's `tools/list` has TWO causes and they are not the same
+  // news: prod's build lacks the tool, or prod's build has it and hides it from
+  // a non-admin token. Only the first is a deploy fact.
+  const unobservableOnProd = onlyLocal.filter((n) => adminOnly.includes(n));
   const missing = local.documented.filter((n) => !prod.documented.includes(n));
   // `missing` fuses two causes that move in opposite directions: prod falling
   // behind, and this tree documenting more. Split on the SAME run — no
   // remembered previous value, which this script is not allowed to keep.
   const deployableNow = missing.filter((n) => prodNames.includes(n));
-  const needsCodeFirst = missing.filter((n) => !prodNames.includes(n));
+  // `needsCodeFirst` says "no description deploy can close this". That is only
+  // true when prod's BUILD lacks the tool. An `adminOnly` tool prod merely
+  // hides from us fails `prodNames.includes` for a reason that has nothing to
+  // do with the deploy, so it is excluded here and reported as UNOBSERVABLE.
+  const needsCodeFirst = missing.filter((n) => !prodNames.includes(n) && !adminOnly.includes(n));
+  const missingButUnobservable = missing.filter((n) => adminOnly.includes(n));
   // The opposite direction. This is the only set here whose growth is bad news
   // about PROD; `missing` grows when somebody does the work locally.
   const regressedOnProd = prod.documented.filter((n) => !local.documented.includes(n));
-  const base = { missing, deployableNow, needsCodeFirst, regressedOnProd, onlyLocal, onlyProd };
+  const base = {
+    missing, deployableNow, needsCodeFirst, missingButUnobservable,
+    regressedOnProd, onlyLocal, unobservableOnProd, onlyProd,
+  };
 
   // The auth control is tested FIRST on purpose. A 403 parses into zero tools,
   // so it trips the population guard too — and "no denominator" is a true but
@@ -318,6 +362,7 @@ async function main(): Promise<number> {
     prod,
     prodNames: real.tools.map((t) => t.name),
     localNames: (TOOLS as unknown as ListedTool[]).map((t) => t.name),
+    localAdminOnly: TOOLS.filter((t) => t.adminOnly).map((t) => t.name),
     authControlSameAsReal,
     matcherControlHits,
   });
@@ -361,6 +406,12 @@ async function main(): Promise<number> {
       `       needs the CODE deploy first (prod lacks it)  ${verdict.needsCodeFirst.length}` +
         (verdict.needsCodeFirst.length ? `: ${verdict.needsCodeFirst.join(', ')}` : ''),
     );
+    console.log(
+      `       UNOBSERVABLE from here (adminOnly, hidden)   ${verdict.missingButUnobservable.length}` +
+        (verdict.missingButUnobservable.length
+          ? `: ${verdict.missingButUnobservable.join(', ')}   ← absence is about THIS TOKEN, not prod`
+          : ''),
+    );
   }
   // Printed at zero on purpose, and printed on DEPLOYED too. Every other
   // number above rises when THIS TREE documents another tool; this is the one
@@ -370,8 +421,20 @@ async function main(): Promise<number> {
       (verdict.regressedOnProd.length ? `: ${verdict.regressedOnProd.join(', ')}   ⚠ prod is AHEAD` : '   ← the only shape that means prod regressed'),
   );
   if (verdict.onlyLocal.length) {
+    // This line used to read "and prod's BUILD does not". It is a claim about
+    // prod's RESPONSE TO THIS TOKEN — `tools/list` hides adminOnly tools from a
+    // non-admin caller, so the two are not the same sentence.
+    const observable = verdict.onlyLocal.filter((n) => !verdict.unobservableOnProd.includes(n));
     console.log(
-      `     tools this tree has and prod's build does not (${verdict.onlyLocal.length}): ${verdict.onlyLocal.join(', ')}`,
+      `     tools this tree has that prod's tools/list did not return (${verdict.onlyLocal.length}): ${verdict.onlyLocal.join(', ')}`,
+    );
+    console.log(
+      `       of those, UNOBSERVABLE from here (adminOnly) ${verdict.unobservableOnProd.length}` +
+        (verdict.unobservableOnProd.length ? `: ${verdict.unobservableOnProd.join(', ')}` : ''),
+    );
+    console.log(
+      `       genuinely absent from prod's visible set     ${observable.length}` +
+        (observable.length ? `: ${observable.join(', ')}` : '   ← the only ones that are a deploy fact'),
     );
   }
   if (verdict.onlyProd.length) {

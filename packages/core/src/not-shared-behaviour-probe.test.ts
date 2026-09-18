@@ -695,13 +695,33 @@ describe('the frame, against the REAL registry — the numbers a receipt may quo
     assert.ok(real.atRisk.includes('move_task'));
     assert.ok(real.probed.includes('move_task'));
     assert.ok(!real.unprobed.includes('move_task'));
-    // DOC axis — untouched. `tasks.test.ts` uses move_task's description as the
-    // NEG-CTL proving the documentation matcher can report a tool as
-    // undocumented; probing what a tool ANSWERS must never edit what it SAYS.
+    // ── DOC axis — the clause that used to live here is RETIRED, 2026-09-18 ──
+    //
+    // It read: `assert.ok(!description.includes('not_shared'), 'move_task must
+    // stay undocumented — it is the doc-half NEG-CTL in tasks.test.ts')`.
+    //
+    // That control no longer exists. `93797d2` retired it FROM tasks.test.ts
+    // the same day, for the reason it was always going to have to be retired: a
+    // NEG-CTL that can only survive while a defect survives ALARMS AT ITS OWN
+    // FIX. This copy outlived the original by two hours and went red the moment
+    // move_task got its `not_shared` sentence — a correct, wanted repair.
+    //
+    // 🔑 And it was invisible to the gate built for exactly this. `DG-NEGCTL-FREE`
+    // (not-shared-doc-gap.mts) screens the gap list against `tasks.test.ts` and
+    // read ✅ GREEN through the edit, because its claim was about one file and
+    // this pin lives in another. Same shape as the tripwire `7f9fac6` retired
+    // one file over. That leg has been widened to screen every `*.test.ts` in
+    // this package rather than one named file.
+    //
+    // What survives here is the clause that was always load-bearing and is NOT
+    // keyed on the defect: the two axes must not leak into each other. A tool
+    // may be probed on BEHAVIOUR without that probe deciding what it SAYS.
     const t = (TOOLS as unknown as { name: string; description?: string }[]).find((x) => x.name === 'move_task')!;
-    assert.ok(
-      !String(t.description ?? '').includes('not_shared'),
-      'move_task must stay undocumented — it is the doc-half NEG-CTL in tasks.test.ts',
+    assert.ok(t, 'move_task left the registry — this whole subtest is about a tool that no longer exists');
+    assert.equal(
+      typeof t.description,
+      'string',
+      'move_task has no description at all — the doc axis is unreadable, which is not the same as undocumented',
     );
   });
 });

@@ -47,9 +47,18 @@
  *
  * So for an hour this script printed a live blocker on writing the gap's prose,
  * for a control that had already been removed. Replaced by `DG-NEGCTL-FREE`,
- * which READS `tasks.test.ts` and screens the whole gap list, with
+ * which READS the test sources and screens the whole gap list, with
  * `DG-NEGCTL-MATCHER` as its POS-CTL so a zero reads as absent rather than as
- * an unread file.
+ * unread files.
+ *
+ * ⚠️ 2026-09-18 11:1xZ — AND THE REPLACEMENT HAD THE SAME DEFECT ONE LEVEL
+ * OVER. It screened `tasks.test.ts` alone, read ✅ GREEN, the 13 sentences went
+ * in, and `not-shared-behaviour-probe.test.ts:702` went RED: a THIRD copy of the
+ * retired pin, in a file the leg never opened. The matcher had been fixed; the
+ * POPULATION had not. It now enumerates every `src/*.test.ts` at run time (15
+ * today) and matches two spellings, and the widening is pinned by an ablation —
+ * restore that pin and the leg goes red naming the file, restore the file and it
+ * goes green.
  *
  *   exit 0  no gap — every tool that answers it, documents it
  *   exit 1  GAP — at least one tool answers `not_shared` and does not say so
@@ -57,7 +66,7 @@
  * ════════════════════════════════════════════════════════════════════════════
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -170,16 +179,41 @@ ctl('DG-ANSWER-NEG', rows.some((r) => r.notShared !== 'NOT_SHARED'),
  * never reads its subject cannot see its subject leave.
  *
  * It reads the file now, and it is keyed on the GAP list rather than on a
- * named tool, so it survives the day the 13 get written. */
-const tasksTest = readFileSync(join(HERE, '..', 'src', 'tasks.test.ts'), 'utf8')
+ * named tool, so it survives the day the 13 get written.
+ *
+ * ⚠️ 2026-09-18 11:1xZ — WIDENED, and the reason is that the narrow version
+ * cleared an edit it should have blocked. It screened `tasks.test.ts` alone,
+ * read ✅ GREEN, the 13 sentences went in — and
+ * `not-shared-behaviour-probe.test.ts:702` went RED, because it carried a THIRD
+ * copy of the same retired pin (`move_task must stay undocumented — it is the
+ * doc-half NEG-CTL in tasks.test.ts`). The leg's claim was "writing the gap
+ * prose kills no control"; its test was "…in this one file I happened to
+ * name". Exactly the defect one revision earlier, moved from the matcher to
+ * the population. So the population is now every `*.test.ts` in `src/`,
+ * enumerated at run time rather than listed — a file added tomorrow is screened
+ * without anyone remembering to add it here. Two regexes, because the two
+ * copies were not spelled the same: the `describes(findTool('x'))` form AND a
+ * bare `!description.includes('not_shared')` assertion naming the tool. */
+const TEST_DIR = join(HERE, '..', 'src')
+const testFiles = readdirSync(TEST_DIR).filter((f) => f.endsWith('.test.ts')).sort()
+const testSrc = testFiles.map((f) => ({ file: f, src: readFileSync(join(TEST_DIR, f), 'utf8') }))
 const describesRe = (t: string) => new RegExp(`describes\\(\\s*findTool\\('${t}'\\)`)
-const namedNegCtl = gap.filter((t) => describesRe(t).test(tasksTest))
-ctl('DG-NEGCTL-MATCHER', describesRe('get_task').test(tasksTest),
-  "POS-CTL — the same regex DOES find get_task's describes() assertion in tasks.test.ts, so a zero below reads as absent rather than as an unread file")
-ctl('DG-NEGCTL-FREE', namedNegCtl.length === 0,
-  namedNegCtl.length === 0
-    ? 'no tool on the gap list is named in a describes() assertion in tasks.test.ts — writing the gap prose kills no control there (read off the file, not inferred)'
-    : `documenting ${namedNegCtl.join(', ')} would kill a NEG-CTL in tasks.test.ts — retire it there FIRST`)
+/* The second spelling: a test asserting a named tool must NOT carry the marker.
+ * That is a pin keyed on the defect wherever it appears, and it is the shape
+ * the narrow leg walked past. */
+const staysUndocRe = (t: string) =>
+  new RegExp(`'${t}'[\\s\\S]{0,600}?!\\s*String\\([^)]*\\)[^\\n]*includes\\(\\s*'not_shared'`)
+const hits = gap.flatMap((t) =>
+  testSrc
+    .filter(({ src }) => describesRe(t).test(src) || staysUndocRe(t).test(src))
+    .map(({ file }) => `${t} (${file})`),
+)
+ctl('DG-NEGCTL-MATCHER', testSrc.some(({ src }) => describesRe('get_task').test(src)),
+  `POS-CTL — the same regex DOES find get_task's describes() assertion somewhere in the ${testFiles.length} src/*.test.ts file(s) read, so a zero below reads as absent rather than as unread files`)
+ctl('DG-NEGCTL-FREE', hits.length === 0,
+  hits.length === 0
+    ? `no tool on the gap list is pinned as undocumented in any of the ${testFiles.length} src/*.test.ts file(s) — writing the gap prose kills no control (read off the files, not inferred)`
+    : `documenting ${hits.join(', ')} would kill a NEG-CTL — retire it THERE first`)
 say('')
 
 const ctlFail = controls.filter((c) => !c.ok)

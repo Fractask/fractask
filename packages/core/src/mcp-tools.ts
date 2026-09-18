@@ -517,6 +517,25 @@ const FIELDS_PROP = {
   description: `Task fields to include on each row. Defaults to ["title","dueAt"]. \`id\` is always included. Pass an explicit list to opt into more (e.g. ["title","status","dueAt","assigneeId"]).`,
 };
 
+/**
+ * The `not_shared` sentence, written ONCE.
+ *
+ * Every tool that reaches a row through `assertAccessibleExists` can answer
+ * `not_shared`: the row EXISTS, this caller cannot reach it. Measured
+ * 2026-09-18 with `npm run not-shared-doc-gap` on this build — 14 tools answer
+ * it and **13 of them never said so**, which matters because a description is
+ * the only thing an agent reads BEFORE it calls. `get_task`'s founding sentence
+ * is the reason: "not found" invites an agent to recreate a task that already
+ * exists.
+ *
+ * It is a FUNCTION of the noun rather than thirteen hand-typed sentences, so
+ * the thirteen cannot drift apart and a future reword lands in one place.
+ * `get_task`'s own longer paragraph is deliberately left alone — it is the
+ * canonical statement, and it says more than this one line can.
+ */
+const notShared = (noun: string) =>
+  `If the ${noun} exists but is not shared with you, this fails with \`not_shared\` rather than "not found" — that means ask for access, never assume it was deleted and recreate it.`;
+
 export const TOOLS: ToolDef[] = [
   {
     name: 'list_tasks',
@@ -648,6 +667,7 @@ export const TOOLS: ToolDef[] = [
       'rules: persistent guidance for this entity/project that future agent sessions should respect.',
       'assigneeId is who does the work; reviewerId is who must approve when the task moves to status="review". Set both equal for self-review, different for peer review.',
       'For repeating work set `recurrence` (e.g. "weekdays", "mon,wed,fri", "1d") + a dueAt. Use recurrenceMode="deliverable" when each occurrence is a real deliverable needing its own approval (daily post, outreach) — a cron then spawns one task per day; "checkbox" (default) is a rolling heartbeat.',
+      notShared('parent task'),
     ].join(' '),
     inputSchemaZod: createTaskZod,
     inputSchemaJson: {
@@ -699,6 +719,7 @@ export const TOOLS: ToolDef[] = [
       'status="review" means waiting for approval; reviewers approve by setting status="done", or send back with status="doing".',
       'Setting status to "done" stamps completedAt.',
       'You cannot move a task INTO status="review" yourself: review is the human\'s "needs your input" queue, so it requires a pending question. Call ask_human(...) instead — it posts the question and moves the task to review for you. To report progress or hand off finished work with nothing to decide, use post_comment(...) and leave the task at "doing" (or set "done" if it is complete). This is a workspace rule ("Review needs a question"), which the human can turn off at /settings/rules.',
+      notShared('task'),
     ].join(' '),
     inputSchemaZod: updateTaskZod,
     inputSchemaJson: {
@@ -805,6 +826,7 @@ export const TOOLS: ToolDef[] = [
       'For a LARGE LOCAL file, prefer create_upload + finalize_upload — a private presigned PUT with no size ceiling and no public copy. Use attach_file_from_url when the source genuinely is a public URL. Two independent limits bite here: (1) on a hosted/serverless endpoint the request body is capped by the platform (~4.5MB on Vercel), and (2) regardless of server, the base64 string is passed as a tool argument through the agent, so anything more than a few hundred KB blows the model output/context limit before the server ever sees it — this is the practical ceiling, and it is the agent\'s output budget, not a server setting. For a LOCAL file with no public URL, see attach_file_from_url: the `http://localhost:PORT` recipe works ONLY when this MCP runs as a local stdio server on your own machine.',
       'Source is auto-tagged "agent". The result includes `downloadUrl`, ready to GET as-is (presigned on S3 storage, expires in 1h; on local storage it\'s /api/files/<id>, needing `Authorization: Bearer <GETSHIT_TOKEN>`) and it also appears in get_task(taskId).attachments or get_note(noteId).attachments; the first image (else video) becomes the calendar thumbnail.',
       '⚠️ One case where you must NOT reroute to attach_file_from_url: an artifact containing a named person\'s details (CV, contract, ID document, customer conversation). The public-object-store route that makes attach_file_from_url work from a headless box mints a permanent, unauthenticated URL that cannot be deleted. Use create_upload + finalize_upload for those — a private presigned upload into this same store, no public copy at any point, and no size ceiling. Fleet standard set by the workspace owner, 2026-09-04.',
+      notShared('task or note'),
     ].join(' '),
     inputSchemaZod: attachFileZod,
     inputSchemaJson: {
@@ -854,6 +876,7 @@ export const TOOLS: ToolDef[] = [
       'Returns {attachmentId, uploadUrl, headers, expiresAt, curl}. `curl` is a ready-to-run command — substitute <path> and run it. The URL expires in 15 minutes and is single-purpose; if it lapses, call this again for a fresh one.',
       'NOTHING IS ATTACHED until you call finalize_upload with the same attachmentId, taskId/noteId, filename, mimeType and sizeBytes. Until then the task shows no attachment.',
       'Not available when the server stores attachments on local disk (a self-hosted default) — it will tell you to use attach_file instead.',
+      notShared('task or note'),
     ].join(' '),
     inputSchemaZod: createUploadZod,
     inputSchemaJson: {
@@ -894,6 +917,7 @@ export const TOOLS: ToolDef[] = [
       'Pass the attachmentId from create_upload plus the SAME taskId/noteId, filename, mimeType and sizeBytes you used there — they identify the object, so a mismatch means it cannot be found.',
       'The server checks the stored object against your declared sizeBytes and refuses (and deletes) a truncated or unexpected upload rather than attaching a corrupt file. Pass sha256 (`sha256sum <file>`) if you have it; it is recorded as provenance but not verified, since verifying would mean downloading the file back.',
       'On success the result includes `downloadUrl`, ready to GET as-is (presigned on S3 storage, expires in 1h; on local storage it\'s /api/files/<attachmentId>, needing `Authorization: Bearer <GETSHIT_TOKEN>`) and it also appears in get_task(taskId).attachments. Source is auto-tagged "agent".',
+      notShared('task or note'),
     ].join(' '),
     inputSchemaZod: finalizeUploadZod,
     inputSchemaJson: {
@@ -935,8 +959,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_attachments',
-    description:
+    description: [
       'List attachments for a task. Each row includes `downloadUrl`, ready to GET as-is — no auth header needed on S3 storage (presigned, expires in 1h); on local storage it\'s /api/files/<id>, which needs `Authorization: Bearer <GETSHIT_TOKEN>`.',
+      notShared('task'),
+    ].join(' '),
     inputSchemaZod: listAttachmentsZod,
     inputSchemaJson: {
       type: 'object',
@@ -979,6 +1005,7 @@ export const TOOLS: ToolDef[] = [
       'Do NOT poll. Exit your turn and continue work next time you are invoked — the human reading get_task again will show the answer in prompts[].',
       'Asking again on the same task supersedes your own earlier pending questions there — they are cancelled automatically and their ids come back as supersededPromptIds, so a revised question replaces the one it revises instead of stacking up in the human\'s queue. Other askers\' prompts are never touched. Pass keepPrevious=true only when your questions are genuinely parallel and you want them all answered.',
       'If you no longer need the answer, call cancel_prompt.',
+      notShared('task'),
     ].join(' '),
     inputSchemaZod: askHumanZod,
     inputSchemaJson: {
@@ -1171,7 +1198,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_prompts',
-    description: 'List all prompts (pending, answered, cancelled) for a task.',
+    description: [
+      'List all prompts (pending, answered, cancelled) for a task.',
+      notShared('task'),
+    ].join(' '),
     inputSchemaZod: listPromptsZod,
     inputSchemaJson: {
       type: 'object',
@@ -1206,6 +1236,7 @@ export const TOOLS: ToolDef[] = [
       'For blocking decisions (approval, choice, open question), use ask_human instead — that moves the task to "review" and surfaces it in the human\'s queue. post_comment does NOT change task status.',
       'Body is markdown; renders the same as task descriptions.',
       'Source is auto-tagged "agent". The comment shows up in get_task(taskId).comments[] (oldest first) and in the web UI thread.',
+      notShared('task'),
     ].join(' '),
     inputSchemaZod: postCommentZod,
     inputSchemaJson: {
@@ -1224,7 +1255,10 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_comments',
-    description: 'List all comments on a task, oldest first. get_task already includes this — call list_comments only when you need the thread without the rest of the task payload.',
+    description: [
+      'List all comments on a task, oldest first. get_task already includes this — call list_comments only when you need the thread without the rest of the task payload.',
+      notShared('task'),
+    ].join(' '),
     inputSchemaZod: listCommentsZod,
     inputSchemaJson: {
       type: 'object',
@@ -1368,6 +1402,7 @@ export const TOOLS: ToolDef[] = [
       'BODY: pass EITHER `contentJson` (preferred — Tiptap doc with real headings/bold/italic/lists/links) OR `contentText` (plain text only — blank lines split paragraphs, single newlines become line breaks).',
       'IMPORTANT: `contentText` is NOT parsed as markdown. `##`, `**`, `-`, table pipes, etc. render as literal characters. For any formatting use `contentJson` — see the Brain notes section of the server instructions for the node schema.',
       'Source is auto-tagged "agent". Returns `{ id }`. Read the new note back with get_note.',
+      notShared('scope task or parent note'),
     ].join(' '),
     inputSchemaZod: createNoteZod,
     inputSchemaJson: {
@@ -1597,6 +1632,7 @@ export const TOOLS: ToolDef[] = [
     description: [
       'Mark a Scratchpad entry as handled: it became `taskId`, or was placed under it (the project/entity/task you filed it into). Call this AFTER create_task / move_task / post_comment / create_note — filing is a pointer, it creates nothing.',
       '`note` is one line the human will read next to the idea, e.g. "Created as a task under Verikal › Website" or "Added as a comment on the pricing task". The entry leaves the new queue and shows in the human\'s Filed list with a link to the task.',
+      notShared('task'),
     ].join(' '),
     inputSchemaZod: scratchFileZod,
     inputSchemaJson: {
@@ -1642,6 +1678,7 @@ export const TOOLS: ToolDef[] = [
       'Reparent a task. newParentId="root" or null promotes the task to a top-level root.',
       'Optional position inserts at that sibling index (siblings shift down).',
       'Cycles (moving a task into its own subtree) are rejected.',
+      notShared('task or the new parent'),
     ].join(' '),
     inputSchemaZod: moveTaskZod,
     inputSchemaJson: {
