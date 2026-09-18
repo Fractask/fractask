@@ -52,7 +52,7 @@ import {
 import { reportShipped } from './focus.js';
 import { shareTaskWithEmail, shareTaskWithUserId } from './shares.js';
 import { mcpErrorText } from './mcp-errors.js';
-import { findTool } from './mcp-tools.js';
+import { findTool, TOOLS } from './mcp-tools.js';
 import { setAgentRules } from './settings.js';
 import { brainNotes, tasks as tasksTable, taskShares, users } from './schema.js';
 import type { Context } from './context.js';
@@ -1830,6 +1830,12 @@ describe('the COLLECTION partition — a hidden filter id answered with the SUCC
       ['list_notes', () => listBrainNotes(ctx, { scopeTaskId: hiddenScope })],
       ['search_notes', () => searchBrainNotes(ctx, 'anything', { scopeTaskId: hiddenScope })],
     ];
+    // One predicate, declared once. The controls below drive THIS binding, not
+    // a second copy of the same expression — a control that re-types its
+    // subject's matcher agrees with a copy, and the copy is what survives when
+    // the subject's matcher is edited.
+    const describes = (description: string) => description.includes('not_shared');
+
     const undocumented: string[] = [];
     for (const [name, probe] of probes) {
       const err = await probe().then(
@@ -1842,16 +1848,58 @@ describe('the COLLECTION partition — a hidden filter id answered with the SUCC
       );
       const tool = findTool(name);
       assert.ok(tool, `${name}: not in TOOLS`);
-      if (!tool.description.includes('not_shared')) undocumented.push(name);
+      if (!describes(tool.description)) undocumented.push(name);
     }
     assert.deepEqual(undocumented, [], `guarded but undocumented: ${undocumented.join(', ')}`);
 
-    // NEG-CTL — the matcher CAN report a tool as undocumented. `move_task` is a
-    // write path carrying no such sentence, so the empty list above is a fact
-    // about these three tools, not "every description contains the string".
+    // NEG-CTL — the matcher CAN report a tool as undocumented, and this leg is
+    // deliberately NOT keyed on any named tool lacking the sentence.
+    //
+    // It used to assert that `move_task`'s description carries no `not_shared`.
+    // That fired correctly and it was a control keyed on the defect: the hour
+    // somebody documents `move_task` the control dies, and its death reads as
+    // "the matcher is broken" rather than as the repair it is.
+    //
+    // The obvious fix — point it at a different undocumented write path — was
+    // measured and rejected. On this build 0 of 22 write-shaped tools carry the
+    // sentence, so there were 21 interchangeable replacements, and that
+    // abundance is the reason not to pick one: any named row re-instantiates
+    // the same control one fix further out.
+    //
+    // Two legs instead, both over `describes` — the one binding the loop above
+    // scored every probed tool with, so this shares the mechanism rather than
+    // re-implementing it.
+
+    // leg 1 — the predicate discriminates. Cannot expire: neither input is a
+    // tool, so no amount of documentation reaches it.
+    assert.equal(
+      describes('a tool description that says nothing about sharing at all'),
+      false,
+      'NEG-CTL broke: the matcher scores a description with no such sentence as documented',
+    );
+    assert.equal(
+      describes(findTool('get_task')!.description),
+      true,
+      'POS-CTL broke: the matcher cannot find the sentence in get_task, which carries it',
+    );
+
+    // leg 2 — and it discriminates over the REAL registry, which leg 1 alone
+    // does not show. Scoped to tools OTHER than the three probed above, so the
+    // subject cannot satisfy its own control.
+    //
+    // This survives this card's own completion, which is the property the
+    // `move_task` version lacked: most of TOOLS never answers `not_shared` at
+    // all (`get_user`, `office_pulse`, `mint_agent_token`), so a registry where
+    // every description carries the sentence is not the fixed state — it is a
+    // broken one, and this leg is allowed to fail there.
+    const probed = new Set(probes.map(([name]) => name));
+    const otherUndocumented = TOOLS.filter(
+      (t) => !probed.has(t.name) && !describes(t.description),
+    ).map((t) => t.name);
     assert.ok(
-      !findTool('move_task')!.description.includes('not_shared'),
-      'NEG-CTL broke: move_task now mentions not_shared, so this matcher proves nothing',
+      otherUndocumented.length > 0,
+      'NEG-CTL broke: every tool outside the probed three scores documented, so the empty list ' +
+        'above is "the matcher says yes to everything" and not a fact about these three tools',
     );
   });
 
