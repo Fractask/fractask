@@ -26,7 +26,7 @@ import {
   type TaskStatus,
 } from './schema.js';
 import { listAttachments } from './attachments.js';
-import { nextOccurrence } from './recurrence.js';
+import { nextOccurrence, rollRecurrence } from './recurrence.js';
 import { hasPendingPrompt, listPromptsForTask, type AgentPrompt } from './prompts.js';
 import { findUserById, isAgentCall } from './auth.js';
 import { isAgentRuleEnabled } from './settings.js';
@@ -767,11 +767,16 @@ export async function updateTask(
       // here: an hourly runner that gets an error on a tick it just correctly
       // performed learns to stop ticking, and then the attendance record — the
       // only evidence the lane ran at all — goes silent.
+      //
+      // The decision itself now lives in `rollRecurrence` (recurrence.ts) —
+      // the `✅ <date>` comment path in comments.ts consumes occurrences too,
+      // and a threshold copied into a second caller is a second threshold.
       const base = existing.dueAt ?? ts;
-      const rolled = nextOccurrence(base, existing.recurrence);
-      const intervalMs = rolled - base;
-      const lead = base - ts;
-      const premature = intervalMs > 0 && lead > intervalMs / 2;
+      const { dueAt: clamped, premature, intervalMs, lead } = rollRecurrence(
+        base,
+        existing.recurrence,
+        ts,
+      );
       if (premature) {
         console.warn(
           `[recurrence] refused to advance ${id}: its occurrence ${new Date(base).toISOString()} ` +
@@ -780,7 +785,7 @@ export async function updateTask(
         );
       }
       update.status = 'open';
-      update.dueAt = premature ? base : rolled;
+      update.dueAt = clamped;
       update.completedAt = null;
     } else {
       update.status = parsed.status;

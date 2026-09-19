@@ -82,6 +82,27 @@ function wallToUtc(y: number, mo: number, d: number, h: number, mi: number, s: n
   return guess - tzOffset(guess, tz);
 }
 
+/**
+ * Start-of-day instant for a `YYYY-MM-DD` calendar date read in `tz`.
+ * Returns null on anything that is not that exact shape or not a real date.
+ *
+ * Exported because an occurrence DAY is a different object from an occurrence
+ * INSTANT, and the `✅ <date>` path in comments.ts has to turn one into the
+ * other. Doing that with `Date.parse(d + 'T00:00:00Z')` lands on the wrong day
+ * for every timezone east of UTC.
+ */
+export function dayStartInTz(date: string, tz: string = DEFAULT_TZ): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const ts = wallToUtc(y, mo, d, 0, 0, 0, tz);
+  // Reject 2026-02-31 and friends: JS rolls them over silently.
+  const back = zonedParts(ts, tz);
+  if (back.y !== y || back.mo !== mo || back.d !== d) return null;
+  return ts;
+}
+
 /** Weekday (0=Sun) for a wall-clock calendar date. */
 function weekdayOf(y: number, mo: number, d: number): number {
   return new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
@@ -123,4 +144,47 @@ export function nextOccurrence(afterMs: number, raw: string, tz: string = DEFAUL
     }
   }
   return afterMs;
+}
+
+/** What a consume-one-occurrence attempt decided, and why. */
+export type RollDecision = {
+  /** Where dueAt should end up. Equals `base` when the roll was refused. */
+  dueAt: number;
+  /** True when the occurrence had not come round yet, so it was NOT consumed. */
+  premature: boolean;
+  /** Derived interval for this rule (0 when the rule is unparseable). */
+  intervalMs: number;
+  /** How far `base` still is from `now`. Negative once the occurrence is due. */
+  lead: number;
+};
+
+/**
+ * The clamp that decides whether an occurrence is actually consumed.
+ *
+ * Lifted out of `updateTask`'s tick path (card `_855zp-qDlJy`) so the SECOND
+ * door into the same state machine — a `✅ <date>` comment (card
+ * `NxaXw3oBX3Wd`) — cannot reintroduce the date-pump bug the clamp exists to
+ * stop. Two copies of a threshold are two thresholds; the whole point of that
+ * card was that a checkbox recurrence visited hourly consumed 24 future
+ * occurrences a day, and a fix that lives in one caller does not protect the
+ * other. Keep it here, in the leaf module both callers already import.
+ *
+ * Threshold, not `base > now`, and deliberately the same one the gauge uses
+ * (`small-sites/tools/recurrence-drift.mjs`, RATE axis: lead > 0.5x interval).
+ * A tick a few minutes early is ordinary; half an interval early is the bug.
+ *
+ * The interval is DERIVED from `nextOccurrence` rather than parsed, so weekday
+ * rules ('mon,wed,fri') — which have no constant interval — work too.
+ */
+export function rollRecurrence(
+  base: number,
+  recurrence: string,
+  now: number,
+  tz: string = DEFAULT_TZ,
+): RollDecision {
+  const rolled = nextOccurrence(base, recurrence, tz);
+  const intervalMs = rolled - base;
+  const lead = base - now;
+  const premature = intervalMs > 0 && lead > intervalMs / 2;
+  return { dueAt: premature ? base : rolled, premature, intervalMs, lead };
 }

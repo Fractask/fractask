@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { closeDb, getDb } from './db/client.js';
 import { createTask, listTasks } from './tasks.js';
 import { materializeRecurrences } from './recurrence-cron.js';
-import { tasks, users } from './schema.js';
+import { taskComments, tasks, users } from './schema.js';
 import type { Context } from './context.js';
 import { nanoid } from 'nanoid';
 
@@ -161,5 +161,92 @@ describe('materializeRecurrences', () => {
     assert.ok(children.length >= 1);
     assert.equal(children[0]!.assigneeId, null);
     assert.equal(res.repaired, 0);
+  });
+});
+
+describe('the backpressure guard — card NxaXw3oBX3Wd part 1', () => {
+  const db = () => getDb();
+  const SKIP_MARKER = '<!-- recurrence:skipped-occurrence -->';
+  const notes = async (taskId: string) =>
+    db().select().from(taskComments).where(eq(taskComments.taskId, taskId));
+  // materializeRecurrences is system-wide and this file's earlier tests leave
+  // their own templates behind, so the returned counters are FLEET totals, not
+  // this template's. Every assertion below is scoped to `tpl` for that reason;
+  // reading res.spawned here would be counting other tests' work.
+  const kids = async (parentId: string) => listTasks(ctx, { parentId });
+
+  // NOW is Wed; run the cron on Thu so the template owes a second day.
+  const THU = Date.UTC(2026, 6, 30, 9, 0, 0);
+  const FRI = Date.UTC(2026, 6, 31, 9, 0, 0);
+
+  it('skips the next occurrence while the previous one is still in flight — and the positive control spawns', async () => {
+    const tpl = await createTask(ctx, {
+      title: 'Post Verikal social content — daily',
+      recurrence: '1d',
+      recurrenceMode: 'deliverable',
+      dueAt: WED_9AM,
+    });
+
+    // Day 1: nothing in flight, so it spawns. This is the control arm — same
+    // template, same cron, same code path; the ONLY thing that differs on the
+    // next run is whether yesterday's child is still open.
+    await materializeRecurrences(NOW);
+    const afterDay1 = await kids(tpl.id);
+    assert.equal(afterDay1.length, 1);
+    const wed = afterDay1[0]!;
+    assert.equal(wed.status, 'open');
+
+    // Day 2: yesterday's is still open.
+    await materializeRecurrences(THU);
+    assert.equal((await kids(tpl.id)).length, 1, 'no second front while day 1 is open');
+
+    // The miss is visible, on the template, naming the blocker.
+    const posted = await notes(tpl.id);
+    assert.equal(posted.length, 1);
+    assert.ok(posted[0]!.body.includes(SKIP_MARKER));
+    assert.ok(posted[0]!.body.includes(wed.id), 'the note names the occurrence that blocked it');
+    assert.ok(posted[0]!.body.includes('2026-07-30'), 'the note names the day that was skipped');
+    assert.equal(posted[0]!.source, 'agent');
+
+    // Skipped, not queued: the template still tracks the calendar.
+    const rolledTo = (await db().select().from(tasks).where(eq(tasks.id, tpl.id)))[0]!.dueAt!;
+    assert.ok(rolledTo > THU, 'dueAt rolled past the skipped day');
+
+    // ABLATION: close the blocker, change nothing else, run the same cron one
+    // day on. If the skip had any other cause, this stays at one child.
+    await db().update(tasks).set({ status: 'done' }).where(eq(tasks.id, wed.id));
+    await materializeRecurrences(FRI);
+    assert.equal(
+      (await kids(tpl.id)).length,
+      2,
+      'control: with nothing in flight the same template spawns again',
+    );
+    assert.equal((await notes(tpl.id)).length, 1, 'and posts no new skip note');
+  });
+
+  it('review counts as in flight, and the note is posted once, not once per run', async () => {
+    const tpl = await createTask(ctx, {
+      title: 'Daily write-up',
+      recurrence: '1d',
+      recurrenceMode: 'deliverable',
+      dueAt: WED_9AM,
+    });
+    await materializeRecurrences(NOW);
+    const child = (await kids(tpl.id))[0]!;
+
+    // Parked awaiting approval — done as far as the agent is concerned, and
+    // exactly the state the four duplicate social cards were found in.
+    await db().update(tasks).set({ status: 'review' }).where(eq(tasks.id, child.id));
+
+    await materializeRecurrences(THU);
+    assert.equal((await kids(tpl.id)).length, 1, 'review blocks the spawn too');
+    assert.equal((await notes(tpl.id)).length, 1);
+
+    // Re-run the same occurrence day. The roll normally makes this
+    // unreachable; force it back so the idempotency guard is what is tested.
+    await db().update(tasks).set({ dueAt: WED_9AM }).where(eq(tasks.id, tpl.id));
+    await materializeRecurrences(THU);
+    assert.equal((await kids(tpl.id)).length, 1);
+    assert.equal((await notes(tpl.id)).length, 1, 'the same skip is not re-announced');
   });
 });
