@@ -54,8 +54,9 @@ import { shareTaskWithEmail, shareTaskWithUserId } from './shares.js';
 import { mcpErrorText } from './mcp-errors.js';
 import { findTool, TOOLS } from './mcp-tools.js';
 import { setAgentRules } from './settings.js';
-import { brainNotes, tasks as tasksTable, taskShares, users } from './schema.js';
+import { brainNotes, taskCompletions, tasks as tasksTable, taskShares, users } from './schema.js';
 import type { Context } from './context.js';
+import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { resetStorageCache } from './storage/index.js';
 
@@ -2148,5 +2149,98 @@ describe('the EXPENSIVE-HAPPY-PATH partition — the three tools every suite ski
       'a caller who CAN see the task must get past the guard and hit the network',
     );
     assert.deepEqual(fetchCalls, [URL_OK], 'the stub must have been reached exactly once');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// The tick clamp — card `_855zp-qDlJy`
+//
+// The defect these pin is not "the roll is wrong". The roll was correct on
+// every single call: dueAt + one interval. It was wrong about how many times
+// it would be CALLED. An hourly runner on a daily card ticks 24 times a day,
+// each tick consumed a future occurrence, and seven cards on the live board
+// ended up due in 2026-12 … 2027-12 — off every human's queue, with nothing
+// in the row reading as broken, because a checkbox recurrence always displays
+// its NEXT occurrence and a future dueAt is what a healthy one looks like too.
+//
+// So the subject here is the SECOND tick within one occurrence, never the
+// first. A test that only ticks once passes against the broken code.
+// ────────────────────────────────────────────────────────────────────────────
+describe('recurring tick: an occurrence is consumed once, not once per visit', () => {
+  const DAY = 86_400_000;
+
+  it('the ORDINARY tick still rolls exactly one interval — the clamp is not a freeze', async () => {
+    const due = Date.now() - 2 * 3_600_000; // this morning: the occurrence has come round
+    const t = await createTask(ctx, { title: 'healthy daily', dueAt: due, recurrence: '1d' });
+    const after1 = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after1.status, 'open', 'a checkbox recurrence rolls instead of completing');
+    assert.equal(after1.dueAt, due + DAY, 'one tick, one interval');
+  });
+
+  it('a SECOND tick in the same hour does not buy a second day', async () => {
+    const due = Date.now() - 2 * 3_600_000;
+    const t = await createTask(ctx, { title: 'hourly runner', dueAt: due, recurrence: '1d' });
+
+    const after1 = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after1.dueAt, due + DAY);
+
+    // Same card, ~an hour later, runner visits again and ticks again. Before
+    // the clamp this landed on due + 2d, and 22 more visits that day landed on
+    // due + 24d. THIS is the assertion the old code fails.
+    const after2 = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after2.dueAt, after1.dueAt, 'the occurrence was already consumed');
+    assert.equal(after2.status, 'open');
+  });
+
+  it('24 ticks in one day leave the card due TOMORROW, not next year', async () => {
+    const due = Date.now() - 2 * 3_600_000;
+    const t = await createTask(ctx, { title: 'a full day of visits', dueAt: due, recurrence: '1d' });
+    for (let i = 0; i < 24; i++) await updateTask(ctx, t.id, { status: 'done' });
+    const row = await getTask(ctx, t.id);
+    assert.equal(row!.dueAt, due + DAY, `24 visits drifted the card to ${new Date(row!.dueAt!).toISOString()}`);
+  });
+
+  it('the completion LEDGER still records every tick — the clamp withholds a date, not a receipt', async () => {
+    const due = Date.now() - 2 * 3_600_000;
+    const t = await createTask(ctx, { title: 'attendance', dueAt: due, recurrence: '1d' });
+    for (let i = 0; i < 3; i++) await updateTask(ctx, t.id, { status: 'done' });
+    const db = getDb();
+    const rows = await db.select().from(taskCompletions).where(eq(taskCompletions.taskId, t.id));
+    assert.equal(rows.length, 3, 'a refused advance is not a refused completion');
+  });
+
+  // The discriminating case. Without it, "clamp when dueAt is in the future"
+  // would be indistinguishable from "never advance a card that is not overdue",
+  // which would break every card ticked a few minutes early.
+  it('CONTROL — a tick slightly EARLY still rolls; the threshold is half an interval, not zero', async () => {
+    const due = Date.now() + 3_600_000; // 1h early on a 1d rule: lead 0.04 of an interval
+    const t = await createTask(ctx, { title: 'keen', dueAt: due, recurrence: '1d' });
+    const after = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after.dueAt, due + DAY, 'an ordinary early tick must not be clamped');
+  });
+
+  it('a tick MORE than half an interval early is refused — the RATE axis the gauge uses', async () => {
+    const due = Date.now() + 18 * 3_600_000; // 0.75 of a 1d interval away
+    const t = await createTask(ctx, { title: 'premature', dueAt: due, recurrence: '1d' });
+    const after = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after.dueAt, due, 'an occurrence three-quarters of a day away is not consumable');
+  });
+
+  it('weekday rules are clamped too — their interval is DERIVED, never parsed as 1d', async () => {
+    // 'mon,wed,fri' has no constant interval (1d, 2d, 3d in rotation). A
+    // hand-parsed threshold would skip these rules entirely.
+    const t = await createTask(ctx, { title: 'weekday', dueAt: Date.now() - 3_600_000, recurrence: 'mon,wed,fri' });
+    const after1 = await updateTask(ctx, t.id, { status: 'done' });
+    const after2 = await updateTask(ctx, t.id, { status: 'done' });
+    assert.ok(after1.dueAt! > Date.now(), 'the first tick rolls to a real future weekday');
+    assert.equal(after2.dueAt, after1.dueAt, 'the second tick in the same visit window buys nothing');
+  });
+
+  it('a DELIVERABLE template is untouched by any of this — it completes, it does not roll', async () => {
+    const t = await createTask(ctx, {
+      title: 'deliverable', dueAt: Date.now() - 3_600_000, recurrence: '1d', recurrenceMode: 'deliverable',
+    });
+    const after = await updateTask(ctx, t.id, { status: 'done' });
+    assert.equal(after.status, 'done', 'deliverable templates complete normally');
   });
 });

@@ -736,9 +736,51 @@ export async function updateTask(
         completedAt: ts,
         source: existing.source,
       });
-      const nextDue = nextOccurrence(existing.dueAt ?? ts, existing.recurrence);
+      // ── The clamp (card `_855zp-qDlJy`, 2026-09-19) ─────────────────────
+      //
+      // The roll below used to be unconditional: dueAt + one interval, every
+      // tick, whatever dueAt already said. Measured on the live board, that
+      // turned an hourly runner into a date pump — a standup card visited 24
+      // times a day and ticked on each visit consumed 24 future occurrences a
+      // day, and seven cards were pushed to 2026-12 … 2027-12. A checkbox
+      // recurrence always DISPLAYS the next occurrence, so a dueAt in the
+      // future looks normal; nothing about the row reads as broken until you
+      // subtract today's date from it.
+      //
+      // So: the base occurrence is only CONSUMED when it has actually come
+      // round. A tick landing well before its own occurrence is logged in
+      // `task_completions` — the attendance record is the thing that matters
+      // and it stays truthful — but it does not buy another day.
+      //
+      // Threshold, not `base > ts`, and deliberately the SAME one the gauge
+      // uses (`small-sites/tools/recurrence-drift.mjs`, RATE axis: lead >
+      // 0.5x the interval). A tick a few minutes early is ordinary; a tick
+      // half an interval early is the bug. Two instruments disagreeing about
+      // what counts as premature would leave a band where the gauge is red
+      // and the boundary allows it.
+      //
+      // The interval is DERIVED from nextOccurrence rather than parsed, so
+      // this works for weekday rules ('mon,wed,fri') too — those have no
+      // constant interval and a hand-parsed `1d` would silently skip them.
+      //
+      // CLAMP, not reject. Rejecting was the other candidate and is worse
+      // here: an hourly runner that gets an error on a tick it just correctly
+      // performed learns to stop ticking, and then the attendance record — the
+      // only evidence the lane ran at all — goes silent.
+      const base = existing.dueAt ?? ts;
+      const rolled = nextOccurrence(base, existing.recurrence);
+      const intervalMs = rolled - base;
+      const lead = base - ts;
+      const premature = intervalMs > 0 && lead > intervalMs / 2;
+      if (premature) {
+        console.warn(
+          `[recurrence] refused to advance ${id}: its occurrence ${new Date(base).toISOString()} ` +
+            `is ${(lead / 86_400_000).toFixed(2)}d away, more than half its own ${intervalMs}ms ` +
+            `interval. Completion logged, dueAt left where it is.`,
+        );
+      }
       update.status = 'open';
-      update.dueAt = nextDue;
+      update.dueAt = premature ? base : rolled;
       update.completedAt = null;
     } else {
       update.status = parsed.status;
